@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://api.anthropic.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>식단·운동 기록</title>
+<meta name="description" content="식사, 체중, 운동, 인바디를 휴대폰에 기록하는 다이어트 노트">
+<meta name="theme-color" content="#F2F4F1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1412" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="식단기록">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preload" href="barlow-condensed-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div>
+      <p class="brand">식단 · 운동 기록</p>
+      <div class="date-row">
+        <button class="iconbtn" id="prevBtn" type="button" aria-label="이전 날">‹</button>
+        <h1 class="date" id="date">&nbsp;</h1>
+        <button class="iconbtn" id="nextBtn" type="button" aria-label="다음 날">›</button>
+        <span class="rel" id="rel"></span>
+      </div>
+    </div>
+    <div class="top-right">
+      <button class="btn small" id="todayBtn" type="button" hidden>오늘로</button>
+      <span class="chip" id="planChip">&nbsp;</span>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="화면">
+    <a href="#today" id="tab-today" aria-current="page">오늘</a>
+    <a href="#training" id="tab-training">운동</a>
+    <a href="#body" id="tab-body">몸</a>
+    <a href="#plan" id="tab-plan">계획</a>
+  </nav>
+
+  <p class="status" id="status" role="status" hidden></p>
+
+  <div class="view" id="view-today">
+    <section class="card hint-card" id="installHint" aria-labelledby="installH" hidden>
+      <div class="card-head">
+        <h2 id="installH">홈 화면에 추가하세요</h2>
+        <button class="xbtn" id="hintClose" type="button" aria-label="안내 닫기">×</button>
+      </div>
+      <p class="small">iPhone: Safari에서 이 페이지를 연 채로 주소창 옆 ‘…’ 버튼 → 공유 → ‘홈 화면에 추가’를 누르세요. 웹 앱으로 여는 옵션은 켠 채로 추가하면 돼요. iOS 18 이하에서는 아래쪽 공유 버튼에 바로 있어요.</p>
+      <p class="small muted">Safari와 홈 화면 앱은 기록을 따로 저장해요. 홈 화면에 추가한 앱을 연 뒤부터 기록하세요.</p>
+      <div class="actions mt-10"><button class="btn primary" id="installBtn" type="button" hidden>앱 설치</button></div>
+    </section>
+
+    <section class="tiles" aria-label="오늘 요약">
+      <div class="tile" id="tKcal">
+        <span class="k">섭취</span>
+        <span class="v"><span id="kcalV">0</span><small id="kcalT"> kcal</small></span>
+        <div class="bar"><i id="kcalBar"></i></div>
+        <span class="sub" id="kcalSub">&nbsp;</span>
+      </div>
+      <div class="tile" id="tProt">
+        <span class="k">단백질</span>
+        <span class="v"><span id="protV">0</span><small id="protT"> g</small></span>
+        <div class="bar protein"><i id="protBar"></i></div>
+        <span class="sub" id="protSub">&nbsp;</span>
+      </div>
+      <div class="tile" id="tTrend">
+        <span class="k">체중 추세</span>
+        <span class="v"><span id="trendV">—</span><small id="trendU"> kg</small></span>
+        <span class="sub" id="trendSub">&nbsp;</span>
+      </div>
+      <div class="tile" id="tWeek">
+        <span class="k">이번 주 운동</span>
+        <span class="v"><span id="weekV">0</span><small> / 6회</small></span>
+        <div class="pips" id="weekPips" aria-hidden="true"></div>
+      </div>
+    </section>
+
+    <section class="card" id="meals" aria-labelledby="mealsH">
+      <div class="card-head">
+        <h2 id="mealsH">식사</h2>
+        <div class="actions">
+          <button class="btn primary" id="photoBtn" type="button" hidden>사진으로 기록</button>
+          <button class="btn" id="addBtn" type="button">직접 입력</button>
+        </div>
+      </div>
+      <div class="meal-list" id="mealList"></div>
+      <p class="hint small muted" id="mealHint"></p>
+    </section>
+
+    <section class="card" id="weighin" aria-labelledby="kgLabel">
+      <form class="inline-form" id="kgForm">
+        <label for="kgInput" id="kgLabel">오늘 아침 체중</label>
+        <input id="kgInput" inputmode="decimal" autocomplete="off" placeholder="0.0">
+        <span id="kgUnit"></span>
+        <button class="btn primary" id="kgSave" type="submit">저장</button>
+      </form>
+      <p class="small muted" id="weighinNote"></p>
+    </section>
+
+    <section class="card upnext" id="upnext" aria-labelledby="upnextH">
+      <div class="card-head">
+        <h2 id="upnextH">오늘의 운동</h2>
+        <a class="btn" href="#training" id="upnextGo">열기</a>
+      </div>
+      <p class="small" id="upnextText"></p>
+    </section>
+  </div>
+
+  <div class="view" id="view-training" hidden>
+    <section class="card" id="trainingCard" aria-labelledby="trainingH">
+      <div class="card-head">
+        <h2 id="trainingH">운동</h2>
+        <span class="chip" id="trainingChip">&nbsp;</span>
+      </div>
+      <div id="trainingBody"></div>
+    </section>
+
+    <section class="card" id="week" aria-labelledby="weekH">
+      <div class="card-head">
+        <h2 id="weekH">이번 주</h2>
+        <span class="chip data" id="verdictChip">데이터 부족</span>
+      </div>
+      <ol class="week-days" id="weekDays"></ol>
+      <p class="small" id="weekStats"></p>
+      <p class="small muted" id="ruleText"></p>
+    </section>
+  </div>
+
+  <div class="view" id="view-body" hidden>
+    <section class="card" id="weight" aria-labelledby="weightH">
+      <div class="card-head"><h2 id="weightH">체중 추세</h2></div>
+      <div class="chart" id="chart"></div>
+      <div class="legend" id="legend" aria-hidden="true"><span><i class="ld"></i>아침 체중</span><span><i class="lt"></i>추세 (10% 평활)</span></div>
+      <p class="small" id="weightStats"></p>
+    </section>
+
+    <section class="card" id="inbody" aria-labelledby="inbodyH">
+      <div class="card-head">
+        <h2 id="inbodyH">인바디</h2>
+        <div class="actions">
+          <button class="btn primary" id="ibPhotoBtn" type="button" hidden>사진으로 기록</button>
+          <button class="btn" id="ibAddBtn" type="button">직접 입력</button>
+        </div>
+      </div>
+      <div id="inbodyBody"></div>
+      <p class="small muted" id="inbodyTip">비교할 수 있는 결과를 얻으려면 매번 같은 조건에서 재세요. 먹기 전·운동 전, 화장실에 다녀온 뒤, 같은 시간대에요. 4주에 한 번 정도면 충분해요. 인바디 체중은 측정 조건이 달라서 아침 체중 추세에는 넣지 않아요.</p>
+    </section>
+  </div>
+
+  <div class="view" id="view-plan" hidden>
+    <section class="card" id="planCard" aria-labelledby="planH">
+      <div class="card-head"><h2 id="planH">계획과 규칙</h2></div>
+      <div class="plan-body" id="planBody"></div>
+    </section>
+
+    <section class="card" id="targets" aria-labelledby="targetsH">
+      <div class="card-head"><h2 id="targetsH">목표와 단위</h2></div>
+      <p class="small muted" id="targetsSub">칼로리, 단백질, 주간 감량 범위, 무게 단위</p>
+      <form class="set-form" id="setForm">
+        <div class="field"><label for="sKcal">하루 칼로리</label><div class="input-unit"><input id="sKcal" inputmode="numeric" autocomplete="off" placeholder="예: 2100"><span>kcal</span></div></div>
+        <div class="field"><label for="sProt">하루 단백질</label><div class="input-unit"><input id="sProt" inputmode="numeric" autocomplete="off" placeholder="예: 115"><span>g</span></div></div>
+        <div class="field"><label for="sBodyUnit">체중 단위</label><select id="sBodyUnit"><option value="kg">kg</option><option value="lb">lb</option></select></div>
+        <div class="field"><label for="sLiftUnit">운동 무게 기본 단위</label><select id="sLiftUnit"><option value="kg">kg</option><option value="lb">lb</option></select></div>
+        <div class="field"><label for="sMin">주간 최소 감량</label><div class="input-unit"><input id="sMin" inputmode="decimal" autocomplete="off"><span id="sMinU">kg/주</span></div></div>
+        <div class="field"><label for="sMax">주간 최대 감량</label><div class="input-unit"><input id="sMax" inputmode="decimal" autocomplete="off"><span id="sMaxU">kg/주</span></div></div>
+        <div class="field"><label for="sStep">조정 폭</label><div class="input-unit"><input id="sStep" inputmode="numeric" autocomplete="off"><span>kcal/일</span></div></div>
+        <div class="field"><button class="btn primary" id="sSave" type="submit">저장</button></div>
+        <p class="small muted wide">단백질은 체중 1 kg당 약 1.6 g이 실용적인 목표예요. 감량 범위는 주 0.45–0.9 kg(1–2 lb)로 시작해요. 기구마다 단위가 다르면 운동 탭에서 운동별로 kg/lb를 바꿀 수 있어요.</p>
+      </form>
+    </section>
+
+    <section class="card" id="dataCard" aria-labelledby="dataH">
+      <div class="card-head"><h2 id="dataH">데이터와 AI</h2></div>
+      <div class="data-sec">
+        <h3 class="sub-h">백업</h3>
+        <p class="small" id="dataCounts"></p>
+        <p class="small muted" id="backupNote"></p>
+        <div class="actions mt-10">
+          <button class="btn primary" id="exportBtn" type="button">백업 내보내기</button>
+          <input class="file-input" id="importFile" type="file">
+          <label class="btn" id="importLabel" for="importFile">백업 가져오기</label>
+        </div>
+        <p class="small muted mt-10">기록은 이 휴대폰에만 있어요. 일주일에 한 번쯤 백업 파일을 내보내서 파일 앱이나 클라우드에 보관하세요. 새 휴대폰에서는 ‘백업 가져오기’로 그대로 옮길 수 있어요.</p>
+        <p class="small muted" id="storageNote"></p>
+      </div>
+      <div class="data-sec">
+        <h3 class="sub-h">사진 읽기 (선택)</h3>
+        <p class="small muted">식사 사진 칼로리 추정과 인바디 결과지·NRC 캡처 읽기는 내 Anthropic API 키로 Claude를 불러서 해요. Claude 구독과는 별개로 Claude Console에서 쓴 만큼 요금이 나가요. 키는 이 휴대폰에만 저장되고, 사진을 읽을 때만 Anthropic으로 보내져요.</p>
+        <p class="small" id="aiKeyState"></p>
+        <form class="set-form" id="aiForm" autocomplete="off">
+          <div class="field wide"><label for="aiKey">Anthropic API 키</label><input id="aiKey" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="sk-ant-…"></div>
+          <div class="field"><label for="aiModel">모델</label><select id="aiModel"><option value="claude-sonnet-5-5">Sonnet 5.5 · 더 정확 (기본)</option><option value="claude-haiku-5-5">Haiku 5.5 · 더 빠르고 저렴</option><option value="custom">다른 모델 직접 입력</option></select></div>
+          <div class="field" id="aiModelCustomWrap" hidden><label for="aiModelCustom">모델 ID</label><input id="aiModelCustom" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="claude-…"></div>
+          <div class="field wide"><div class="actions"><button class="btn primary" id="aiSave" type="submit">저장</button><button class="btn" id="aiTest" type="button">연결 확인</button><button class="btn danger" id="aiClear" type="button" hidden>키 지우기</button></div></div>
+          <p class="small muted wide" id="aiMsg" aria-live="polite"></p>
+        </form>
+        <p class="small muted">키는 <a href="https://platform.claude.com" target="_blank" rel="noopener noreferrer">Claude Console</a>에서 만들어요. 이 앱 전용 키를 따로 만들고, Console의 결제 설정에서 월 사용 한도를 걸어 두면 안심이에요.</p>
+      </div>
+    </section>
+
+    <footer>
+      기록은 이 휴대폰 안에만 저장되고 어떤 서버로도 보내지 않아요. 사진 읽기를 쓸 때만 그 사진이 내 API 키로 Anthropic에 보내져요. 휴대폰을 바꾸거나 홈 화면에서 앱을 지우면 기록이 사라질 수 있으니 ‘데이터와 AI’에서 가끔 백업을 내보내 두세요.
+    </footer>
+  </div>
+</div>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="panel" id="sheetPanel" role="dialog" aria-modal="true" aria-labelledby="sheetTitle"></div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
