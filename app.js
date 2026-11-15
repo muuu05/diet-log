@@ -32,6 +32,17 @@ function sv(tag, attrs) {
   return n;
 }
 const field = (id, label, control, cls) => h("div", { class: "field" + (cls ? " " + cls : "") }, h("label", { for: id }, label), control);
+/* line icons drawn on a 24-unit grid, stroked with the current text colour */
+const ICONS = {
+  dumbbell: "M6.5 6.5v11M17.5 6.5v11M3.5 9.5v5M20.5 9.5v5M6.5 12h11",
+  bolt: "M13 2.8 5.2 13.4h6.1l-1 7.8 8.5-11.3h-6.3z",
+  moon: "M19.6 14.6A8 8 0 0 1 9.4 4.4a7.7 7.7 0 1 0 10.2 10.2z",
+};
+function icon(name) {
+  const s = sv("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
+  s.append(sv("path", { d: ICONS[name] }));
+  return s;
+}
 
 const pad = n => String(n).padStart(2, "0");
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -43,6 +54,7 @@ const weekday = s => fromYmd(s).getDay();
 const mondayOf = s => addDays(s, -((weekday(s) + 6) % 7));
 const DOW = ["일", "월", "화", "수", "목", "금", "토"];
 const fmtDay = s => { const d = fromYmd(s); return `${d.getMonth() + 1}월 ${d.getDate()}일 (${DOW[d.getDay()]})`; };
+const fmtDayLong = s => { const d = fromYmd(s); return `${d.getMonth() + 1}월 ${d.getDate()}일 ${DOW[d.getDay()]}요일`; };
 const fmtMD = s => { const d = fromYmd(s); return `${d.getMonth() + 1}월 ${d.getDate()}일`; };
 const fmtDM = s => { const d = fromYmd(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
 const nowHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
@@ -381,7 +393,7 @@ function renderAll() {
 
 function renderHeader() {
   const d = state.selected, p = planFor(d);
-  $("#date").textContent = fmtDay(d);
+  $("#date").textContent = fmtDayLong(d);
   $("#rel").textContent = d === state.today ? "오늘" : d === addDays(state.today, -1) ? "어제" : d === addDays(state.today, 1) ? "내일" : "";
   $("#todayBtn").hidden = d === state.today;
   $("#nextBtn").disabled = daysBetween(state.today, d) >= 7;
@@ -392,8 +404,7 @@ function renderHeader() {
 
 function renderSummary() {
   const st = settings(), d = state.selected, ms = mealsOn(d);
-  setTile("kcal", sumOf(ms, "kcal"), st.kcal, "kcal", true);
-  setTile("prot", sumOf(ms, "protein"), st.protein, "g", false);
+  renderHero(ms, st);
 
   const tp = trendAt(d), v = verdictAt(d);
   $("#trendV").textContent = tp ? fmtMass(tp.trend) : "—";
@@ -402,6 +413,7 @@ function renderSummary() {
     : v.r.perWeek == null ? (v.r.since < 13 ? `14일째부터 주간 속도가 보여요 (지금 ${v.r.since + 1}일째)` : `기록 8번이 필요해요 (14일 중 ${v.r.n}번)`)
     : `${fmtRate(v.r.perWeek)} · 최근 14일`;
   $("#tTrend").dataset.v = v.code;
+  drawSpark(d);
 
   const mon = mondayOf(d), start = planStart();
   let done = 0;
@@ -415,14 +427,59 @@ function renderSummary() {
   }
   $("#weekV").textContent = String(done);
 }
-function setTile(key, val, target, unit, warnOver) {
-  $(`#${key}V`).textContent = fmtInt(val);
-  $(`#${key}T`).textContent = target ? ` / ${fmtInt(target)}${unit === "g" ? " g" : ""}` : ` ${unit}`;
-  const bar = $(`#${key}Bar`);
-  bar.style.width = (target ? Math.min(100, (val / target) * 100) : 0) + "%";
-  bar.parentElement.classList.toggle("over", !!(warnOver && target && val > target * 1.03));
-  $(`#${key}Sub`).textContent = !target ? "계획 탭에서 목표를 정하세요"
-    : val <= target ? `${fmtInt(target - val)} ${unit} 남음` : `${fmtInt(val - target)} ${unit} 초과`;
+/* today's hero: the kcal total, then one bar segment per meal so you can see which meal used the budget */
+function renderHero(ms, st) {
+  const total = sumOf(ms, "kcal"), target = st.kcal;
+  $("#kcalV").textContent = fmtInt(total);
+  $(".hero").toggleAttribute("data-over", !!(target && total > target * 1.03));
+  const sub = $("#kcalSub");
+  sub.replaceChildren();
+  if (!target) sub.append("계획 탭에서 하루 목표를 정하면 남은 양이 보여요");
+  else if (total <= target) sub.append("목표 ", h("b", null, `${fmtInt(target)} kcal`), " 중 ", h("b", null, `${fmtInt(target - total)} kcal`), " 남았어요");
+  else sub.append("목표 ", h("b", null, `${fmtInt(target)} kcal`), "보다 ", h("b", null, `${fmtInt(total - target)} kcal`), " 더 먹었어요");
+
+  const bar = $("#budget"), scale = Math.max(target || 0, total);
+  bar.replaceChildren();
+  if (scale > 0) {
+    let i = 0;
+    for (const m of ms) {
+      const k = num(m.kcal) || 0;
+      if (k <= 0) continue;
+      const seg = h("i", { class: "bseg s" + (i++ % 3) });
+      seg.style.width = (k / scale) * 100 + "%";
+      bar.append(seg);
+    }
+    if (target && total > target) {
+      const at = (target / scale) * 100;
+      const over = h("i", { class: "bover" }), tick = h("i", { class: "btick" });
+      over.style.left = at + "%"; over.style.width = 100 - at + "%";
+      tick.style.left = `calc(${at}% - 1px)`;
+      bar.append(over, tick);
+    }
+  }
+  bar.setAttribute("aria-label", ms.length
+    ? `식사 ${ms.length}번, 합계 ${fmtInt(total)} kcal` + (target ? `, 목표 ${fmtInt(target)} kcal` : "")
+    : "아직 식사 기록이 없어요");
+
+  const prot = sumOf(ms, "protein"), pt = st.protein;
+  $("#protV").textContent = fmtInt(prot);
+  $("#protT").textContent = pt ? ` / ${fmtInt(pt)} g` : " g";
+  $("#protBar").style.width = (pt ? Math.min(100, (prot / pt) * 100) : 0) + "%";
+  $("#protSub").textContent = !pt ? "단백질 목표도 계획 탭에서 정할 수 있어요"
+    : prot < pt ? `${fmtInt(pt - prot)} g 더 먹으면 단백질 목표예요` : "단백질 목표를 채웠어요";
+}
+/* the trend tile's sparkline: the last three weeks of the smoothed weight */
+function drawSpark(d) {
+  const svg = $("#trendSpark");
+  svg.replaceChildren();
+  const pts = trendSeries().filter(p => p.date <= d).slice(-21);
+  svg.toggleAttribute("hidden", pts.length < 2);
+  if (pts.length < 2) return;
+  let lo = Infinity, hi = -Infinity;
+  for (const p of pts) { lo = Math.min(lo, p.trend); hi = Math.max(hi, p.trend); }
+  const span = Math.max(hi - lo, 0.4), mid = (hi + lo) / 2;
+  const xy = (p, i) => [(i / (pts.length - 1)) * 96 + 2, 15 - ((p.trend - mid) / span) * 22];
+  svg.append(sv("path", { d: pts.map((p, i) => (i ? "L" : "M") + xy(p, i).map(n => n.toFixed(2)).join(",")).join(""), class: "spark-line", "vector-effect": "non-scaling-stroke" }));
 }
 
 function renderMeals() {
@@ -457,8 +514,10 @@ function mealRow(m) {
       thumb,
       h("span", { class: "m-main" },
         h("span", { class: "m-name" }, str(m.name, 80) || "식사"),
-        h("span", { class: "m-meta muted" }, [hasImg ? str(m.time, 5) : "", src, conf].filter(Boolean).join(" · "))),
-      h("span", { class: "m-num num" }, h("b", null, fmtInt(kcal)), " kcal", h("br"), h("span", { class: "p" }, `단백질 ${fmtInt(prot)} g`))));
+        h("span", { class: "m-meta" }, [hasImg ? str(m.time, 5) : "", src, conf].filter(Boolean).map(t => h("span", null, t)))),
+      h("span", { class: "m-num" },
+        h("span", null, h("b", { class: "num" }, fmtInt(kcal)), h("span", { class: "u" }, "kcal")),
+        h("span", { class: "p" }, `단백질 ${fmtInt(prot)} g`))));
   const body = h("div", { class: "m-body" });
   if (Array.isArray(m.items) && m.items.length) {
     body.append(h("ul", { class: "items" }, m.items.slice(0, 20).map(it => h("li", null,
@@ -760,7 +819,7 @@ function renderWeight() {
   if (r.perWeek == null) stats.append(" · " + rateWait(r));
   else {
     stats.append(" · 최근 14일 속도 ", h("b", { class: "num" }, fmtRate(r.perWeek)),
-      ` (체중 기록에 맞춘 직선) · 하루 약 ${fmtSigned((r.perWeek / 7) * 7700, 0)} kcal의 에너지 수지${u === "lb" ? " (1 lb ≈ 3,500 kcal 가정)" : " (1 kg ≈ 7,700 kcal 가정)"}.`);
+      ` (체중 기록에 맞춘 직선) · 하루 약 ${(r.perWeek < 0 ? MINUS : "+") + fmtInt(Math.abs((r.perWeek / 7) * 7700))} kcal의 에너지 수지${u === "lb" ? " (1 lb ≈ 3,500 kcal 가정)" : " (1 kg ≈ 7,700 kcal 가정)"}.`);
   }
 }
 let lastChartWidth = 0;
@@ -800,9 +859,13 @@ function drawChart() {
     svg.append(t);
   });
   const line = pts.map((p, i) => `${i ? "L" : "M"}${x(p.date).toFixed(1)},${y(p.trend).toFixed(1)}`).join("");
-  if (pts.length > 1) svg.append(sv("path", { d: `${line}L${x(pts[pts.length - 1].date).toFixed(1)},${H - B}L${x(pts[0].date).toFixed(1)},${H - B}Z`, class: "area" }));
-  for (const p of pts) svg.append(sv("circle", { cx: x(p.date).toFixed(1), cy: y(p.kg).toFixed(1), r: 3, class: "dot" }));
+  /* tie each weigh-in to the trend: amber when the scale read above the trend, green when below */
+  for (const p of pts) {
+    const px = x(p.date).toFixed(1);
+    if (Math.abs(y(p.kg) - y(p.trend)) >= 1) svg.append(sv("line", { x1: px, x2: px, y1: y(p.kg).toFixed(1), y2: y(p.trend).toFixed(1), class: p.kg > p.trend ? "float" : "sink" }));
+  }
   if (pts.length > 1) svg.append(sv("path", { d: line, class: "trend" }));
+  for (const p of pts) svg.append(sv("circle", { cx: x(p.date).toFixed(1), cy: y(p.kg).toFixed(1), r: 3.2, class: "dot" }));
   const last = pts[pts.length - 1];
   svg.append(sv("circle", { cx: x(last.date).toFixed(1), cy: y(last.trend).toFixed(1), r: 5, class: "end" }));
   const lbl = sv("text", { x: (x(last.date) + 8).toFixed(1), y: (y(last.trend) + 4).toFixed(1), "text-anchor": "start", class: "endlabel" });
@@ -856,6 +919,9 @@ function renderUpNext() {
     text = done ? "러닝을 기록했어요." : state.photo.ok ? "러닝하는 날이에요. NRC 캡처로 기록하거나 시간을 입력하세요." : "러닝하는 날이에요. 뛰고 나서 시간과 거리를 입력하세요.";
   } else text = "휴식일이에요. 이번 주 판정은 운동 탭에 있어요." + (backupDue() ? " 오늘은 백업도 내보내 두세요 (계획 탭 → 데이터와 AI)." : "");
   $("#upnextText").textContent = text;
+  const ico = $("#upnextIco");
+  ico.className = "up-ico " + p.kind;
+  ico.replaceChildren(icon(p.kind === "gym" ? "dumbbell" : p.kind === "run" ? "bolt" : "moon"));
   $("#upnextGo").textContent = p.kind === "rest" ? "주간 보기" : done ? "보기" : "열기";
 }
 
@@ -1133,7 +1199,7 @@ function renderTargets() {
 /* plan reference */
 function buildPlan() {
   const body = $("#planBody");
-  const sec = (title, ...kids) => h("section", null, h("h3", null, title), ...kids);
+  const sec = (title, ...kids) => h("section", { class: "sec" }, h("div", { class: "sec-head" }, h("h2", null, title)), h("div", { class: "box pad" }, ...kids));
   const exList = key => h("ul", { class: "ex-list" }, GYM[key].items.map(ex => h("li", null,
     h("span", { class: "g" }, ex.g), h("span", null, ex.name, ex.note ? h("span", { class: "muted" }, ` · ${ex.note}`) : null),
     h("span", { class: "sr" }, repLabel(ex)))));
