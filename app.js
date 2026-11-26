@@ -91,7 +91,7 @@ function unitToggle(current, onPick, disabled, label) {
 }
 
 /* ---------- small device settings (not records): API key, model, last backup ---------- */
-const LS = { key: "dietlog.apiKey", model: "dietlog.model", backup: "dietlog.lastBackup", hint: "dietlog.hideInstallHint" };
+const LS = { key: "dietlog.apiKey", model: "dietlog.model", backup: "dietlog.lastBackup", hint: "dietlog.hideInstallHint", usage: "dietlog.usage" };
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); return true; } catch (e) { return false; } };
 
@@ -785,7 +785,7 @@ function openRunPhoto() {
       go.disabled = true; stop.hidden = false; out.hidden = true; sheetBusy = true;
       msg.textContent = "러닝 기록을 읽는 중…";
       try {
-        const res = await state.sample.json(runPrompt(), { images: [blob], maxTokens: 800, signal: ctl.signal });
+        const res = await state.sample.json(runPrompt(), { images: [blob], maxTokens: 4000, signal: ctl.signal });
         if (res.error) { msg.textContent = "러닝 요약 화면이 아닌 것 같아요. 러닝 직후의 요약 화면으로 해 보세요."; return; }
         runResultForm(out, res);
         msg.textContent = "숫자를 확인한 뒤 저장하세요.";
@@ -1169,7 +1169,7 @@ function openInbodyPhoto() {
       go.disabled = true; stop.hidden = false; out.hidden = true; sheetBusy = true;
       msg.textContent = "결과지를 읽는 중… 최대 1분 걸릴 수 있어요.";
       try {
-        const res = await state.sample.json(inbodyPrompt(), { images: [blob], maxTokens: 800, signal: ctl.signal });
+        const res = await state.sample.json(inbodyPrompt(), { images: [blob], maxTokens: 4000, signal: ctl.signal });
         if (res.error) { msg.textContent = "인바디 결과지가 아닌 것 같아요. 다른 사진으로 해 보세요."; return; }
         inbodyForm(out, cleanInbody(res), "photo");
         msg.textContent = "숫자를 하나씩 결과지와 비교한 뒤 저장하세요.";
@@ -1418,7 +1418,7 @@ function openPhoto() {
       go.disabled = true; stop.hidden = false; out.hidden = true; sheetBusy = true;
       msg.textContent = "생각하는 중… 최대 1분 걸릴 수 있어요.";
       try {
-        const res = await state.sample.json(estimatePrompt(note.value), { images: [blob], maxTokens: 2000, signal: ctl.signal });
+        const res = await state.sample.json(estimatePrompt(note.value), { images: [blob], maxTokens: 4000, signal: ctl.signal });
         if (res.error) { msg.textContent = "음식이나 음료 사진이 아닌 것 같아요. 다른 사진으로 해 보세요."; return; }
         showEstimate(out, cleanEstimate(res), note, time, () => thumb);
         msg.textContent = "숫자를 확인하고, 틀린 건 고친 뒤 저장하세요.";
@@ -1473,7 +1473,44 @@ function showEstimate(out, est, noteEl, timeEl, getThumb) {
 
 /* ---------- photo reading: the Anthropic Messages API, called from this page with the user's own key ---------- */
 const AI_URL = "https://api.anthropic.com/v1/messages";
-const MODEL_IDS = ["claude-sonnet-5-5", "claude-haiku-5-5"];
+const MODEL_IDS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"];
+/* Claude 5-family models think before answering (adaptive thinking; always on for Opus 5.5). Thinking is billed as
+   output and counts toward max_tokens, so every request sets an effort: "low" to read a photo, "medium" to plan a week.
+   A custom model outside this family gets no effort field. */
+const EFFORT_MODELS = /^claude-(opus|sonnet|haiku|fable)-5(-\d+)?$/;
+const effortFor = (model, effort) => (EFFORT_MODELS.test(model) ? { output_config: { effort } } : {});
+/* USD per million input / output tokens: Anthropic list prices, November 2026. Only used to show an estimate. */
+const PRICE = { "claude-opus-5-5": [4, 20], "claude-sonnet-5-5": [2, 10], "claude-haiku-5-5": [0.1, 0.5] };
+function readUsage() {
+  try { const o = JSON.parse(lsGet(LS.usage) || "{}"); return isPlainObj(o) ? o : {}; } catch (e) { return {}; }
+}
+/* tokens per model per month, on this device only, so the data tab can show what this month has cost */
+function recordUsage(model, u) {
+  const inp = (num(u && u.input_tokens) || 0) + (num(u && u.cache_read_input_tokens) || 0) + (num(u && u.cache_creation_input_tokens) || 0);
+  const out = num(u && u.output_tokens) || 0;
+  if (!inp && !out) return;
+  const all = readUsage(), month = ymd(new Date()).slice(0, 7);
+  const m = isPlainObj(all[month]) ? all[month] : (all[month] = {});
+  const cur = isPlainObj(m[model]) ? m[model] : {};
+  m[model] = { n: (num(cur.n) || 0) + 1, in: (num(cur.in) || 0) + inp, out: (num(cur.out) || 0) + out };
+  for (const k of Object.keys(all).sort().slice(0, -12)) delete all[k];
+  lsSet(LS.usage, JSON.stringify(all));
+  const el = document.getElementById("aiUsage");
+  if (el) el.textContent = usageText();
+}
+function usageText() {
+  const month = ymd(new Date()).slice(0, 7), m = readUsage()[month];
+  let n = 0, inp = 0, out = 0, usd = 0, unpriced = false;
+  for (const [model, v] of Object.entries(isPlainObj(m) ? m : {})) {
+    if (!isPlainObj(v)) continue;
+    n += num(v.n) || 0; inp += num(v.in) || 0; out += num(v.out) || 0;
+    const p = PRICE[model];
+    if (p) usd += ((num(v.in) || 0) * p[0] + (num(v.out) || 0) * p[1]) / 1e6; else unpriced = true;
+  }
+  if (!n) return `${Number(month.slice(5))}월에는 아직 AI를 쓰지 않았어요.`;
+  return `${Number(month.slice(5))}월 이 휴대폰에서 쓴 양: 요청 ${fmtInt(n)}번 · 입력 ${fmtInt(inp)} · 출력 ${fmtInt(out)} 토큰`
+    + (usd ? ` · 약 $${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)}` : "") + (unpriced ? " (직접 입력한 모델은 요금 계산에서 빠져요)" : "");
+}
 const AI_SYSTEM = "You read photos for a personal diet and training log used in South Korea. Follow the instructions exactly. Reply with one JSON object only: no prose before or after it, no markdown code fences.";
 const aiKey = () => (lsGet(LS.key) || "").trim();
 const aiModel = () => (lsGet(LS.model) || "").trim() || MODEL_IDS[0];
@@ -1520,18 +1557,21 @@ function postMessages({ body, signal, key }) {
     throw aiErr(navigator.onLine === false ? "offline" : "network");
   });
 }
-async function callClaude({ content, maxTokens, signal, model, key }) {
-  const res = await postMessages({ signal, key, body: { model, max_tokens: maxTokens, system: AI_SYSTEM, messages: [{ role: "user", content }] } });
+async function callClaude({ content, maxTokens, signal, model, key, effort }) {
+  const res = await postMessages({ signal, key, body: Object.assign(
+    { model, max_tokens: maxTokens, system: AI_SYSTEM, messages: [{ role: "user", content }] }, effortFor(model, effort || "low")) });
   let body = null;
   try { body = await res.json(); } catch (e) { if (e && e.name === "AbortError") throw aiErr("cancelled"); body = null; }
   if (!res.ok) throw mapApiError(res.status, body);
   if (!body) throw aiErr("empty_completion");
+  recordUsage(model, body.usage);
   return body;
 }
 /* streamed version for long answers (a week of meals takes a minute or two): text arrives as server-sent events,
    so the page can show progress, and a slow phone connection is never idle long enough to be dropped */
-async function callClaudeStream({ content, maxTokens, signal, model, key, system, onText }) {
-  const res = await postMessages({ signal, key, body: { model, max_tokens: maxTokens, system, stream: true, messages: [{ role: "user", content }] } });
+async function callClaudeStream({ content, maxTokens, signal, model, key, system, effort, onText, onThink }) {
+  const res = await postMessages({ signal, key, body: Object.assign(
+    { model, max_tokens: maxTokens, system, stream: true, messages: [{ role: "user", content }] }, effortFor(model, effort || "medium")) });
   if (!res.ok) {
     let body = null;
     try { body = await res.json(); } catch (e) { if (e && e.name === "AbortError") throw aiErr("cancelled"); }
@@ -1549,6 +1589,8 @@ async function callClaudeStream({ content, maxTokens, signal, model, key, system
     if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta" && typeof ev.delta.text === "string") {
       text += ev.delta.text;
       if (onText) onText(text);
+    } else if (ev.type === "content_block_start" && ev.content_block && /thinking/.test(String(ev.content_block.type))) {
+      if (onThink) onThink();
     } else if (ev.type === "message_start" && ev.message && ev.message.usage) {
       const u = ev.message.usage;
       usage.input = (num(u.input_tokens) || 0) + (num(u.cache_read_input_tokens) || 0) + (num(u.cache_creation_input_tokens) || 0);
@@ -1581,6 +1623,7 @@ async function callClaudeStream({ content, maxTokens, signal, model, key, system
     if ((e && e.name === "AbortError") || (signal && signal.aborted)) throw aiErr("cancelled");
     throw aiErr(navigator.onLine === false ? "offline" : "network");
   }
+  recordUsage(model, { input_tokens: usage.input, output_tokens: usage.output });
   return { text, stop, usage };
 }
 async function aiJson(prompt, opts = {}) {
@@ -1589,7 +1632,7 @@ async function aiJson(prompt, opts = {}) {
   const content = [];
   for (const b of opts.images || []) content.push({ type: "image", source: { type: "base64", media_type: b.type || "image/jpeg", data: await blobToBase64(b) } });
   content.push({ type: "text", text: prompt });
-  const body = await callClaude({ content, maxTokens: opts.maxTokens || 2000, signal: opts.signal, model: aiModel(), key });
+  const body = await callClaude({ content, maxTokens: opts.maxTokens || 4000, signal: opts.signal, model: aiModel(), key, effort: "low" });
   if (body.stop_reason === "refusal") throw aiErr("refused");
   const text = Array.isArray(body.content) ? body.content.filter(c => c && c.type === "text").map(c => c.text).join("") : "";
   if (!text.trim()) throw aiErr("empty_completion");
@@ -1642,15 +1685,15 @@ function wireAi() {
     if (!key) return;
     btn.disabled = true; msg.textContent = "확인하는 중…";
     try {
-      await callClaude({ content: [{ type: "text", text: "Reply with the word OK." }], maxTokens: 5, model: aiModel(), key });
-      msg.textContent = `연결됐어요. ${aiModel()} 모델로 사진을 읽을 수 있어요.`;
+      await callClaude({ content: [{ type: "text", text: "Reply with the word OK." }], maxTokens: 64, model: aiModel(), key, effort: "low" });
+      msg.textContent = `연결됐어요. ${aiModel()} 모델로 사진 읽기와 식단 만들기를 쓸 수 있어요.`;
     } catch (e) { msg.textContent = sampleCopy(e && e.code, e && e.detail); }
     finally { btn.disabled = !aiKey(); }
   });
   $("#aiClear").addEventListener("click", () => {
     lsSet(LS.key, null);
     state.photo.ok = false;
-    msg.textContent = "키를 지웠어요. 사진 읽기가 꺼졌어요.";
+    msg.textContent = "키를 지웠어요. AI 기능이 꺼졌어요.";
     renderAll();
   });
 }
@@ -2157,7 +2200,9 @@ function openPlanMaker() {
       try {
         saveProfile({ prefs }).catch(() => {});
         const res = await callClaudeStream({
-          content: [{ type: "text", text: planPrompt(t, prefs, mon) }], maxTokens: 12000, signal: ctl.signal, model: aiModel(), key: aiKey(), system: PLAN_SYSTEM,
+          content: [{ type: "text", text: planPrompt(t, prefs, mon) }], maxTokens: 16000, effort: "medium",
+          signal: ctl.signal, model: aiModel(), key: aiKey(), system: PLAN_SYSTEM,
+          onThink: () => { progress = "식단을 구상하는 중…"; },
           onText: txt => {
             const nr = (txt.match(/"steps"\s*:/g) || []).length, nd = (txt.match(/"meals"\s*:/g) || []).length;
             progress = nd ? `요일별 식단을 쓰는 중 (${Math.min(nd, 7)}/7)` : nr ? `레시피를 쓰는 중 (${nr}개)` : "쓰기 시작했어요";
@@ -2412,7 +2457,8 @@ function renderData() {
   $("#importFile").disabled = !canWrite();
   $("#importLabel").classList.toggle("is-disabled", !canWrite());
   const key = aiKey();
-  $("#aiKeyState").textContent = key ? `저장된 키: ${maskKey(key)} · 모델 ${aiModel()}` : "저장된 키가 없어요. 사진 읽기는 꺼져 있어요.";
+  $("#aiKeyState").textContent = key ? `저장된 키: ${maskKey(key)} · 모델 ${aiModel()}` : "저장된 키가 없어요. AI 기능은 꺼져 있어요.";
+  $("#aiUsage").textContent = usageText();
   $("#aiTest").disabled = !key;
   $("#aiClear").hidden = !key;
   $("#aiKey").placeholder = key ? "키를 바꿀 때만 입력" : "sk-ant-…";

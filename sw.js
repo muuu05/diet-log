@@ -1,6 +1,6 @@
 /* 식단·운동 기록 — service worker. Keeps the app working offline.
    When you change any file, bump VERSION so phones fetch the new files. Records are not here: they live in IndexedDB. */
-const VERSION = "v3";
+const VERSION = "v4";
 const CACHE = "diet-log-" + VERSION;
 const SHELL = [
   "./", "./index.html", "./app.css", "./app.js", "./manifest.webmanifest",
