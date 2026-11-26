@@ -42,6 +42,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.6v2.1M12 19.3v2.1M4.7 4.7l1.5 1.5M17.8 17.8l1.5 1.5M2.6 12h2.1M19.3 12h2.1M4.7 19.3l1.5-1.5M17.8 6.2l1.5-1.5"/></svg>
       <span>오늘</span>
     </a>
+    <a href="#diet" id="tab-diet">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 12h17M4.6 12a7.4 7.4 0 0 0 14.8 0M9.5 20.5h5M9.5 3.6c-.9 1.1.9 2.2 0 3.4M14.5 3.6c-.9 1.1.9 2.2 0 3.4"/></svg>
+      <span>식단</span>
+    </a>
     <a href="#training" id="tab-training">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5v11M17.5 6.5v11M3.5 9.5v5M20.5 9.5v5M6.5 12h11"/></svg>
       <span>운동</span>
@@ -80,6 +84,7 @@
         <span class="macro-v num"><b id="protV">0</b><span id="protT"> g</span></span>
       </div>
       <p class="macro-sub" id="protSub">&nbsp;</p>
+      <p class="macro-more" id="macroMore" hidden></p>
     </section>
 
     <div class="tiles">
@@ -111,6 +116,14 @@
       <p class="sec-note" id="mealHint"></p>
     </section>
 
+    <section class="sec" id="todayPlan" aria-labelledby="todayPlanH" hidden>
+      <div class="sec-head">
+        <h2 id="todayPlanH">오늘의 식단</h2>
+        <a class="btn small" href="#diet">식단 보기</a>
+      </div>
+      <div class="box"><div class="mp-list" id="todayPlanList"></div></div>
+    </section>
+
     <section class="sec" id="weighin" aria-labelledby="kgLabel">
       <div class="sec-head"><h2><label for="kgInput" id="kgLabel">오늘 아침 체중</label></h2></div>
       <div class="box pad">
@@ -130,6 +143,40 @@
         <span class="up-text" id="upnextText"></span>
         <span class="up-go" id="upnextGo">열기</span>
       </a>
+    </section>
+  </div>
+
+  <div class="view" id="view-diet" hidden>
+    <section class="sec" id="dietTargets" aria-labelledby="dtH">
+      <div class="sec-head">
+        <h2 id="dtH">하루 목표</h2>
+        <div class="actions"><span class="chip" id="dtChip" hidden></span><button class="btn small" id="dtEdit" type="button">정보 입력</button></div>
+      </div>
+      <div class="box pad" id="dtBody"></div>
+      <p class="sec-note">기초대사량(Mifflin-St Jeor 공식, 최근 8주 안의 인바디가 있으면 그 값) × 활동량에서 감량분(1 kg ≈ 7,700 kcal)을 빼요. 남성 1,500 kcal, 여성 1,200 kcal 밑으로는 내리지 않아요. 에너지 비율은 2025 한국인 영양소 섭취기준(성인)의 탄수화물 50–65%, 단백질 10–20%, 지방 15–30%를 참고하되, 근력운동을 하며 감량할 땐 단백질을 체중 1 kg당 1.6–2.2 g으로 잡아서 단백질 비율이 20%를 넘기 쉬워요.</p>
+    </section>
+
+    <section class="sec" id="mealPlan" aria-labelledby="mpH">
+      <div class="sec-head">
+        <h2 id="mpH">이번 주 식단</h2>
+        <button class="btn primary small" id="mpGen" type="button">식단 만들기</button>
+      </div>
+      <div class="box" id="mpBody"></div>
+      <p class="sec-note" id="mpNote"></p>
+    </section>
+
+    <section class="sec" id="shopSec" aria-labelledby="shopH" hidden>
+      <div class="sec-head">
+        <h2 id="shopH">장보기 목록</h2>
+        <button class="btn small" id="shopCopy" type="button">목록 복사</button>
+      </div>
+      <div class="box pad" id="shopBody"></div>
+      <p class="sec-note">일주일 치를 합친 양이에요. 양념은 집에 있으면 건너뛰세요. 산 건 체크해 두면 이 휴대폰에 남아요.</p>
+    </section>
+
+    <section class="sec" id="recSec" aria-labelledby="recH" hidden>
+      <div class="sec-head"><h2 id="recH">레시피</h2></div>
+      <div class="box" id="recBody"></div>
     </section>
   </div>
 
@@ -165,6 +212,15 @@
       <p class="sec-note" id="weightStats"></p>
     </section>
 
+    <section class="sec" id="bodyChange" aria-labelledby="bodyH">
+      <div class="sec-head">
+        <h2 id="bodyH">몸 변화</h2>
+        <div class="actions"><button class="btn primary small" id="bodyAddBtn" type="button">기록하기</button></div>
+      </div>
+      <div class="box pad" id="bodyBody"></div>
+      <p class="sec-note">눈바디 사진과 둘레를 남기는 곳이에요. 사진은 이 휴대폰에만 저장되고 어디로도 보내지 않아요. 백업 파일에는 사진도 들어가니 백업 파일은 나만 보관하세요.</p>
+    </section>
+
     <section class="sec" id="inbody" aria-labelledby="inbodyH">
       <div class="sec-head">
         <h2 id="inbodyH">인바디</h2>
@@ -188,13 +244,15 @@
         <form class="set-form" id="setForm">
           <div class="field"><label for="sKcal">하루 칼로리</label><div class="input-unit"><input id="sKcal" inputmode="numeric" autocomplete="off" placeholder="예: 2100"><span>kcal</span></div></div>
           <div class="field"><label for="sProt">하루 단백질</label><div class="input-unit"><input id="sProt" inputmode="numeric" autocomplete="off" placeholder="예: 115"><span>g</span></div></div>
+          <div class="field"><label for="sCarb">하루 탄수화물</label><div class="input-unit"><input id="sCarb" inputmode="numeric" autocomplete="off" placeholder="선택"><span>g</span></div></div>
+          <div class="field"><label for="sFat">하루 지방</label><div class="input-unit"><input id="sFat" inputmode="numeric" autocomplete="off" placeholder="선택"><span>g</span></div></div>
           <div class="field"><label for="sBodyUnit">체중 단위</label><select id="sBodyUnit"><option value="kg">kg</option><option value="lb">lb</option></select></div>
           <div class="field"><label for="sLiftUnit">운동 무게 기본 단위</label><select id="sLiftUnit"><option value="kg">kg</option><option value="lb">lb</option></select></div>
           <div class="field"><label for="sMin">주간 최소 감량</label><div class="input-unit"><input id="sMin" inputmode="decimal" autocomplete="off"><span id="sMinU">kg/주</span></div></div>
           <div class="field"><label for="sMax">주간 최대 감량</label><div class="input-unit"><input id="sMax" inputmode="decimal" autocomplete="off"><span id="sMaxU">kg/주</span></div></div>
           <div class="field"><label for="sStep">조정 폭</label><div class="input-unit"><input id="sStep" inputmode="numeric" autocomplete="off"><span>kcal/일</span></div></div>
           <div class="field"><button class="btn primary" id="sSave" type="submit">저장</button></div>
-          <p class="small muted wide">단백질은 체중 1 kg당 약 1.6 g이 실용적인 목표예요. 감량 범위는 주 0.45–0.9 kg(1–2 lb)로 시작해요. 기구마다 단위가 다르면 운동 탭에서 운동별로 kg/lb를 바꿀 수 있어요.</p>
+          <p class="small muted wide">칼로리와 탄수화물·단백질·지방은 식단 탭에서 내 정보로 계산해 바로 적용할 수 있어요. 여기서는 직접 고칠 수 있어요. 감량 범위는 주 0.45–0.9 kg(1–2 lb)로 시작해요. 기구마다 단위가 다르면 운동 탭에서 운동별로 kg/lb를 바꿀 수 있어요.</p>
         </form>
       </div>
     </section>
@@ -210,7 +268,7 @@
           <input class="file-input" id="importFile" type="file">
           <label class="btn" id="importLabel" for="importFile">백업 가져오기</label>
         </div>
-        <p class="small muted mt-10">기록은 이 휴대폰에만 있어요. 일주일에 한 번쯤 백업 파일을 내보내서 파일 앱이나 클라우드에 보관하세요. 새 휴대폰에서는 ‘백업 가져오기’로 그대로 옮길 수 있어요.</p>
+        <p class="small muted mt-10">기록은 이 휴대폰에만 있어요. 일주일에 한 번쯤 백업 파일을 내보내서 파일 앱이나 클라우드에 보관하세요. 새 휴대폰에서는 ‘백업 가져오기’로 그대로 옮길 수 있어요. 몸 변화 사진도 백업에 들어가니 파일을 다른 사람과 공유하지 마세요.</p>
         <p class="small muted" id="storageNote"></p>
       </div>
       <div class="box pad data-sec">

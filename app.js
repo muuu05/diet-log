@@ -155,7 +155,7 @@ function docsOf(kind) {
 function settings() {
   const x = state.docs.get("settings") || {};
   return {
-    kcal: num(x.kcalTarget), protein: num(x.proteinTarget),
+    kcal: num(x.kcalTarget), protein: num(x.proteinTarget), fat: num(x.fatTarget), carbs: num(x.carbTarget),
     rateMin: num(x.rateMin) ?? 0.45, rateMax: num(x.rateMax) ?? 0.9, step: num(x.stepKcal) ?? 150,
     bodyUnit: okUnit(x.bodyUnit), liftUnit: okUnit(x.liftUnit),
   };
@@ -199,10 +199,11 @@ function verdictAt(d) {
   if (loss > st.rateMax) return { code: "add", label: `하루 ${fmtInt(st.step)} kcal 늘리기`, r };
   return { code: "hold", label: "그대로 유지", r };
 }
-/* the plan starts on the first day anything was logged (or today), so earlier days never count as missed */
+/* the plan starts on the first day anything was logged (or today), so earlier days never count as missed.
+   A meal plan is dated to its Monday, which is not a log, so it never moves the start. */
 function planStart() {
   let min = null;
-  for (const d of state.docs.values()) if (d && isYmd(d.date) && (min == null || d.date < min)) min = d.date;
+  for (const d of state.docs.values()) if (d && d.kind !== "mealplan" && isYmd(d.date) && (min == null || d.date < min)) min = d.date;
   return min && min < state.today ? min : state.today;
 }
 const anySet = log => !!log && typeof log === "object" && Object.values(log).some(a => Array.isArray(a) && a.some(x => x && num(x.reps) > 0));
@@ -384,10 +385,13 @@ function renderAll() {
   renderMeals();
   renderWeight();
   renderUpNext();
+  renderBody();
   renderInbody();
   renderWeek();
   renderTargets();
   renderData();
+  renderTodayPlan();
+  renderDiet();
   if (!trainingBusy()) renderTraining();
 }
 
@@ -434,7 +438,7 @@ function renderHero(ms, st) {
   $(".hero").toggleAttribute("data-over", !!(target && total > target * 1.03));
   const sub = $("#kcalSub");
   sub.replaceChildren();
-  if (!target) sub.append("계획 탭에서 하루 목표를 정하면 남은 양이 보여요");
+  if (!target) sub.append("식단 탭에서 하루 목표를 계산해 적용하면 남은 양이 보여요");
   else if (total <= target) sub.append("목표 ", h("b", null, `${fmtInt(target)} kcal`), " 중 ", h("b", null, `${fmtInt(target - total)} kcal`), " 남았어요");
   else sub.append("목표 ", h("b", null, `${fmtInt(target)} kcal`), "보다 ", h("b", null, `${fmtInt(total - target)} kcal`), " 더 먹었어요");
 
@@ -465,8 +469,15 @@ function renderHero(ms, st) {
   $("#protV").textContent = fmtInt(prot);
   $("#protT").textContent = pt ? ` / ${fmtInt(pt)} g` : " g";
   $("#protBar").style.width = (pt ? Math.min(100, (prot / pt) * 100) : 0) + "%";
-  $("#protSub").textContent = !pt ? "단백질 목표도 계획 탭에서 정할 수 있어요"
+  $("#protSub").textContent = !pt ? "단백질 목표도 식단 탭에서 계산할 수 있어요"
     : prot < pt ? `${fmtInt(pt - prot)} g 더 먹으면 단백질 목표예요` : "단백질 목표를 채웠어요";
+  const more = $("#macroMore");
+  more.hidden = !(st.carbs || st.fat);
+  if (!more.hidden) {
+    more.replaceChildren(
+      h("span", null, "탄수화물 ", h("b", null, fmtInt(sumOf(ms, "carbs"))), st.carbs ? ` / ${fmtInt(st.carbs)} g` : " g"),
+      h("span", null, "지방 ", h("b", null, fmtInt(sumOf(ms, "fat"))), st.fat ? ` / ${fmtInt(st.fat)} g` : " g"));
+  }
 }
 /* the trend tile's sparkline: the last three weeks of the smoothed weight */
 function drawSpark(d) {
@@ -507,7 +518,7 @@ function mealRow(m) {
   const thumb = hasImg
     ? h("img", { class: "thumb", src: m.thumb, alt: "" })
     : h("span", { class: "thumb ph", "aria-hidden": "true" }, str(m.time, 5) || "—");
-  const src = m.source === "chat" ? "채팅으로 기록" : m.source === "photo" ? "사진으로 추정" : "직접 입력";
+  const src = m.source === "chat" ? "채팅으로 기록" : m.source === "photo" ? "사진으로 추정" : m.source === "plan" ? "식단대로 기록" : "직접 입력";
   const conf = ({ low: "신뢰도 낮음", medium: "신뢰도 보통", high: "신뢰도 높음" })[m.confidence] || "";
   const det = h("details", { class: "meal" },
     h("summary", null,
@@ -893,8 +904,8 @@ function drawChart() {
   return true;
 }
 
-/* views (hash routing: #today, #training, #body, #plan) */
-const VIEWS = ["today", "training", "body", "plan"];
+/* views (hash routing: #today, #diet, #training, #body, #plan) */
+const VIEWS = ["today", "diet", "training", "body", "plan"];
 const currentView = () => { const n = location.hash.slice(1); return VIEWS.includes(n) ? n : "today"; };
 function showView(scrollTop) {
   const v = currentView();
@@ -1032,9 +1043,10 @@ function renderInbody() {
       ["weight", "smm", "fatMass", "pbf", "score"].map(k => h("td", null, fmtIB(ibShow(r, k), IB[k]))),
       h("td", null, writable ? h("button", { class: "xbtn", type: "button", "aria-label": `${fmtDay(r.date)} 인바디 기록 삭제`, onclick: () => confirmDeleteInbody(r) }, "×") : null)))))));
 }
-function miniChart(list, key, cls, title) {
+function miniChart(list, key, cls, title, get) {
   const wrap = h("div", { class: "mini" }, h("h3", null, title));
-  const pts = list.map(r => ({ date: r.date, v: ibShow(r, key) })).filter(p => p.v != null);
+  const val = get || (r => ibShow(r, key));
+  const pts = list.map(r => ({ date: r.date, v: val(r) })).filter(p => p.v != null);
   if (pts.length < 2) { wrap.append(h("p", { class: "small muted" }, "이 값이 있는 검사가 두 번 필요해요.")); return wrap; }
   const W = 360, H = 100, L = 8, R = 46, T = 14, B = 20;
   const d0 = pts[0].date, span = Math.max(1, daysBetween(d0, pts[pts.length - 1].date));
@@ -1186,13 +1198,15 @@ function confirmDeleteInbody(r) {
 function renderTargets() {
   const st = settings(), u = st.bodyUnit;
   const put = (id, v) => { const el = $(id); if (document.activeElement !== el) el.value = v == null ? "" : String(v); el.disabled = !canWrite(); };
-  put("#sKcal", st.kcal); put("#sProt", st.protein);
+  put("#sKcal", st.kcal); put("#sProt", st.protein); put("#sCarb", st.carbs); put("#sFat", st.fat);
   put("#sBodyUnit", st.bodyUnit); put("#sLiftUnit", st.liftUnit);
   put("#sMin", fmtBand(st.rateMin)); put("#sMax", fmtBand(st.rateMax)); put("#sStep", st.step);
   $("#sMinU").textContent = `${u}/주`; $("#sMaxU").textContent = `${u}/주`;
   $("#sSave").disabled = !canWrite();
+  const g = (label, v) => (v ? `${label} ${fmtInt(v)} g` : "");
   $("#targetsSub").textContent = (st.kcal || st.protein)
-    ? `${st.kcal ? fmtInt(st.kcal) + " kcal" : "칼로리 목표 없음"} · ${st.protein ? "단백질 " + fmtInt(st.protein) + " g" : "단백질 목표 없음"} · 주 ${fmtBand(st.rateMin)}–${fmtBand(st.rateMax)} ${u} 감량 · 체중 ${u}, 운동 ${st.liftUnit}`
+    ? [st.kcal ? fmtInt(st.kcal) + " kcal" : "칼로리 목표 없음", g("단백질", st.protein) || "단백질 목표 없음", g("탄수화물", st.carbs), g("지방", st.fat),
+      `주 ${fmtBand(st.rateMin)}–${fmtBand(st.rateMax)} ${u} 감량`, `체중 ${u}, 운동 ${st.liftUnit}`].filter(Boolean).join(" · ")
     : `아직 설정하지 않았어요 · 체중 ${u}, 운동 ${st.liftUnit}`;
 }
 
@@ -1337,21 +1351,12 @@ function canvasFor(src, w, hh, max) {
 }
 /* 1568 px on the long edge: larger photos are scaled down by the API anyway, so sending more only costs time */
 async function prepImage(file) {
-  let src = null, w = 0, hh = 0, done = () => {};
-  if (window.createImageBitmap) {
-    try { src = await createImageBitmap(file, { imageOrientation: "from-image" }); w = src.width; hh = src.height; done = () => src.close && src.close(); }
-    catch (e) { src = null; }
-  }
-  if (!src) {
-    const url = URL.createObjectURL(file);
-    src = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("decode")); im.src = url; });
-    w = src.naturalWidth; hh = src.naturalHeight; done = () => URL.revokeObjectURL(url);
-  }
+  const img = await decodeImage(file);
   try {
-    const blob = await new Promise((res, rej) => canvasFor(src, w, hh, 1568).toBlob(b => b ? res(b) : rej(new Error("encode")), "image/jpeg", 0.85));
-    const thumb = canvasFor(src, w, hh, 160).toDataURL("image/jpeg", 0.62);
+    const blob = await new Promise((res, rej) => canvasFor(img.src, img.w, img.hh, 1568).toBlob(b => b ? res(b) : rej(new Error("encode")), "image/jpeg", 0.85));
+    const thumb = canvasFor(img.src, img.w, img.hh, 160).toDataURL("image/jpeg", 0.62);
     return { blob, thumb };
-  } finally { done(); }
+  } finally { img.done(); }
 }
 function estimatePrompt(note) {
   const n = note.trim().slice(0, 400);
@@ -1488,38 +1493,95 @@ function parseJsonLoose(text) {
   if (a >= 0 && b > a) { try { return JSON.parse(t.slice(a, b + 1)); } catch (e) { /* give up */ } }
   return null;
 }
-async function callClaude({ content, maxTokens, signal, model, key }) {
-  let res;
-  try {
-    res = await fetch(AI_URL, {
-      method: "POST", signal, cache: "no-store", referrerPolicy: "no-referrer",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify({ model, max_tokens: maxTokens, system: AI_SYSTEM, messages: [{ role: "user", content }] }),
-    });
-  } catch (e) {
+/* an error body from the API, before or during a stream, as one of the codes sampleCopy explains */
+function mapApiError(status, body) {
+  const err = (body && body.error) || {}, type = err.type || "", message = String(err.message || "");
+  if (status === 401 || type === "authentication_error") return aiErr("bad_key");
+  if (/credit balance/i.test(message)) return aiErr("no_credit");
+  if (status === 403 || type === "permission_error") return aiErr("forbidden");
+  if (status === 404 || type === "not_found_error") return aiErr("no_model");
+  if (status === 413 || type === "request_too_large") return aiErr("too_large");
+  if (status === 429 || type === "rate_limit_error") return aiErr("rate_limited");
+  if (status === 529 || status >= 500 || type === "overloaded_error" || type === "api_error") return aiErr("overloaded");
+  return aiErr("bad_request", { detail: message.slice(0, 160) });
+}
+function postMessages({ body, signal, key }) {
+  return fetch(AI_URL, {
+    method: "POST", signal, cache: "no-store", referrerPolicy: "no-referrer",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify(body),
+  }).catch(e => {
     if (e && e.name === "AbortError") throw aiErr("cancelled");
     throw aiErr(navigator.onLine === false ? "offline" : "network");
-  }
+  });
+}
+async function callClaude({ content, maxTokens, signal, model, key }) {
+  const res = await postMessages({ signal, key, body: { model, max_tokens: maxTokens, system: AI_SYSTEM, messages: [{ role: "user", content }] } });
   let body = null;
   try { body = await res.json(); } catch (e) { if (e && e.name === "AbortError") throw aiErr("cancelled"); body = null; }
-  if (!res.ok) {
-    const err = (body && body.error) || {}, type = err.type || "", message = String(err.message || "");
-    if (res.status === 401 || type === "authentication_error") throw aiErr("bad_key");
-    if (/credit balance/i.test(message)) throw aiErr("no_credit");
-    if (res.status === 403 || type === "permission_error") throw aiErr("forbidden");
-    if (res.status === 404 || type === "not_found_error") throw aiErr("no_model");
-    if (res.status === 413 || type === "request_too_large") throw aiErr("too_large");
-    if (res.status === 429 || type === "rate_limit_error") throw aiErr("rate_limited");
-    if (res.status === 529 || type === "overloaded_error" || res.status >= 500) throw aiErr("overloaded");
-    throw aiErr("bad_request", { detail: message.slice(0, 160) });
-  }
+  if (!res.ok) throw mapApiError(res.status, body);
   if (!body) throw aiErr("empty_completion");
   return body;
+}
+/* streamed version for long answers (a week of meals takes a minute or two): text arrives as server-sent events,
+   so the page can show progress, and a slow phone connection is never idle long enough to be dropped */
+async function callClaudeStream({ content, maxTokens, signal, model, key, system, onText }) {
+  const res = await postMessages({ signal, key, body: { model, max_tokens: maxTokens, system, stream: true, messages: [{ role: "user", content }] } });
+  if (!res.ok) {
+    let body = null;
+    try { body = await res.json(); } catch (e) { if (e && e.name === "AbortError") throw aiErr("cancelled"); }
+    throw mapApiError(res.status, body);
+  }
+  let text = "", stop = null;
+  const usage = { input: 0, output: 0 };
+  const handle = block => {
+    let data = "";
+    for (const line of block.split("\n")) if (line.startsWith("data:")) data += line.slice(5).replace(/^ /, "");
+    if (!data) return;
+    let ev = null;
+    try { ev = JSON.parse(data); } catch (e) { return; }
+    if (!isPlainObj(ev)) return;
+    if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta" && typeof ev.delta.text === "string") {
+      text += ev.delta.text;
+      if (onText) onText(text);
+    } else if (ev.type === "message_start" && ev.message && ev.message.usage) {
+      const u = ev.message.usage;
+      usage.input = (num(u.input_tokens) || 0) + (num(u.cache_read_input_tokens) || 0) + (num(u.cache_creation_input_tokens) || 0);
+    } else if (ev.type === "message_delta") {
+      if (ev.delta && ev.delta.stop_reason) stop = ev.delta.stop_reason;
+      if (ev.usage && num(ev.usage.output_tokens) != null) usage.output = num(ev.usage.output_tokens);
+    } else if (ev.type === "error") throw mapApiError(0, ev);
+  };
+  const feed = (() => {
+    let buf = "";
+    return (chunk, last) => {
+      buf += chunk.replace(/\r/g, "");
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) { const block = buf.slice(0, i); buf = buf.slice(i + 2); handle(block); }
+      if (last && buf.trim()) { handle(buf); buf = ""; }
+    };
+  })();
+  try {
+    if (res.body && res.body.getReader) {
+      const reader = res.body.getReader(), dec = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        feed(dec.decode(value, { stream: true }), false);
+      }
+      feed(dec.decode(), true);
+    } else feed(await res.text(), true);
+  } catch (e) {
+    if (e && e.code) throw e;
+    if ((e && e.name === "AbortError") || (signal && signal.aborted)) throw aiErr("cancelled");
+    throw aiErr(navigator.onLine === false ? "offline" : "network");
+  }
+  return { text, stop, usage };
 }
 async function aiJson(prompt, opts = {}) {
   const key = aiKey();
@@ -1551,6 +1613,7 @@ function sampleCopy(code, detail) {
     empty_completion: "결과가 오지 않았어요. 다시 시도하세요.",
     invalid_json: "결과를 읽을 수 없었어요. 다시 시도하세요.",
     truncated: "결과가 중간에 끊겼어요. 다시 시도하세요.",
+    invalid_plan: "식단을 제대로 만들지 못했어요. 다시 시도하세요.",
     bad_request: "요청이 거절됐어요." + (detail ? ` (${detail})` : ""),
   })[code] || "처리하는 중에 문제가 생겼어요. 다시 시도하세요.";
 }
@@ -1592,12 +1655,743 @@ function wireAi() {
   });
 }
 
+/* ---------- diet: daily targets worked out from my profile ---------- */
+const ACTIVITY = [
+  { v: 1.2, label: "거의 안 움직여요 (운동 안 함)" },
+  { v: 1.375, label: "가볍게 움직여요 (주 1–3회 운동)" },
+  { v: 1.55, label: "보통이에요 (주 3–5회 운동)" },
+  { v: 1.725, label: "많이 움직여요 (주 6–7회 운동)" },
+  { v: 1.9, label: "아주 많이 움직여요 (몸 쓰는 일 + 운동)" },
+];
+const RATES = [0.25, 0.5, 0.75, 1];
+const PROT_GPK = [1.6, 1.8, 2, 2.2];
+const FAT_PCT = [20, 25, 30];
+const KCAL_PER_KG = 7700;   /* the usual estimate of the energy in 1 kg of body weight lost */
+const CARB_RNI = 130;       /* g a day: the carbohydrate RNI in the Korean dietary reference intakes */
+const pickOf = (v, list, dflt) => (list.includes(v) ? v : dflt);
+function profile() {
+  const x = state.docs.get("profile") || {};
+  const age = inRange(x.age, 18, 90);
+  return {
+    sex: x.sex === "m" || x.sex === "f" ? x.sex : null,
+    age: age == null ? null : Math.round(age),
+    heightCm: inRange(x.heightCm, 120, 230),
+    weightKg: inRange(x.weightKg, 30, 300),
+    goalKg: inRange(x.goalKg, 30, 300),
+    activity: pickOf(num(x.activity), ACTIVITY.map(a => a.v), 1.55),
+    rateKg: pickOf(num(x.rateKg), RATES, 0.5),
+    proteinGpk: pickOf(num(x.proteinGpk), PROT_GPK, 1.8),
+    fatPct: pickOf(num(x.fatPct), FAT_PCT, 25),
+    tdeeSource: x.tdeeSource === "observed" ? "observed" : "formula",
+    prefs: isPlainObj(x.prefs) ? x.prefs : {},
+  };
+}
+const anyProfile = p => !!(p.sex || p.age || p.heightCm);
+function saveProfile(patch) {
+  const cur = state.docs.get("profile") || {};
+  return save("profile", Object.assign({ kind: "profile" }, cur, patch, { updatedAt: new Date().toISOString() }));
+}
+/* body weight for the targets: the morning-weight trend, else the last InBody weight, else what was typed in the profile */
+function weightFor(d, p) {
+  const tp = trendAt(d);
+  if (tp) return { kg: tp.trend, from: "아침 체중 추세" };
+  const ib = inbodies().filter(r => r.date <= d && ibVal(r, "weight") != null).pop();
+  if (ib) return { kg: ibVal(ib, "weight"), from: `인바디 ${fmtMD(ib.date)}` };
+  if (p.weightKg != null) return { kg: p.weightKg, from: "직접 넣은 체중" };
+  return null;
+}
+/* an InBody basal rate from the last 8 weeks beats the formula; an older one describes a heavier body */
+function recentBmr(d) {
+  const ib = inbodies().filter(r => r.date <= d && daysBetween(r.date, d) <= 56 && ibVal(r, "bmr") != null).pop();
+  return ib ? { kcal: ibVal(ib, "bmr"), date: ib.date } : null;
+}
+/* maintenance seen in my own records: average logged intake minus the energy of the weight change.
+   Needs 10 of the last 14 days logged (800 kcal or more) and the 14-day weight rate. */
+function observedTdee(d) {
+  const end = d >= state.today ? addDays(state.today, -1) : d;
+  let n = 0, sum = 0;
+  for (let i = 0; i < 14; i++) { const k = sumOf(mealsOn(addDays(end, -i)), "kcal"); if (k >= 800) { n++; sum += k; } }
+  const r = rateAt(end);
+  if (n < 10 || r.perWeek == null) return { n, r, tdee: null };
+  return { n, r, tdee: Math.round((sum / n - (r.perWeek * KCAL_PER_KG) / 7) / 10) * 10 };
+}
+/* Mifflin-St Jeor (or a recent InBody BMR) × activity − the deficit for the chosen weekly loss, never below 1,500 / 1,200 kcal.
+   Protein from body weight (the goal weight when it is lower), fat as a share of calories, carbohydrate takes the rest. */
+function computeTargets(p, d) {
+  const w = weightFor(d, p), need = [];
+  if (!p.sex) need.push("성별");
+  if (!p.age) need.push("나이");
+  if (!p.heightCm) need.push("키");
+  if (!w) need.push("체중");
+  if (need.length) return { ok: false, need };
+  const ib = recentBmr(d);
+  const bmr = ib ? ib.kcal : 10 * w.kg + 6.25 * p.heightCm - 5 * p.age + (p.sex === "f" ? -161 : 5);
+  const formula = bmr * p.activity, obs = observedTdee(d);
+  const useObs = p.tdeeSource === "observed" && obs.tdee != null;
+  const tdee = useObs ? obs.tdee : formula;
+  const deficit = (p.rateKg * KCAL_PER_KG) / 7, floor = p.sex === "f" ? 1200 : 1500;
+  const raw = Math.round((tdee - deficit) / 10) * 10, kcal = Math.max(raw, floor);
+  const protKg = p.goalKg != null && p.goalKg < w.kg ? p.goalKg : w.kg;
+  const protein = Math.round(protKg * p.proteinGpk), fat = Math.round((kcal * p.fatPct) / 900);
+  const carbs = Math.max(0, Math.round((kcal - 4 * protein - 9 * fat) / 4));
+  return { ok: true, w, ib, bmr, formula, obs, useObs, tdee, deficit, floor, raw, kcal, protKg, protein, fat, carbs,
+    pct: { protein: (400 * protein) / kcal, carbs: (400 * carbs) / kcal, fat: (900 * fat) / kcal } };
+}
+/* the targets a meal plan is built for: what is saved, with fat and carbohydrate filled in when only kcal and protein are */
+function fullTargets() {
+  const st = settings();
+  if (!st.kcal || !st.protein) return null;
+  const fat = st.fat ?? Math.round((st.kcal * 25) / 900);
+  const carbs = st.carbs ?? Math.max(0, Math.round((st.kcal - 4 * st.protein - 9 * fat) / 4));
+  return { kcal: Math.round(st.kcal), protein: Math.round(st.protein), fat: Math.round(fat), carbs: Math.round(carbs) };
+}
+function macroBar(p, c, f) {
+  const parts = [["p", 4 * p], ["c", 4 * c], ["f", 9 * f]], tot = parts.reduce((a, x) => a + x[1], 0) || 1;
+  const bar = h("div", { class: "mbar", "aria-hidden": "true" });
+  for (const [cls, v] of parts) { const i = h("i", { class: cls }); i.style.width = (v / tot) * 100 + "%"; bar.append(i); }
+  return bar;
+}
+function renderDiet() {
+  renderDietTargets();
+  renderMealPlan();
+}
+function renderDietTargets() {
+  const box = $("#dtBody"), chip = $("#dtChip"), edit = $("#dtEdit");
+  const p = profile(), st = settings(), u = bu(), t = computeTargets(p, state.selected);
+  edit.textContent = anyProfile(p) ? "정보 수정" : "정보 입력";
+  edit.disabled = !canWrite();
+  box.replaceChildren();
+  if (!t.ok) {
+    chip.hidden = true;
+    box.append(
+      h("p", null, anyProfile(p) ? `${t.need.join(", ")} 정보가 더 필요해요.` : "성별, 나이, 키를 넣으면 하루 목표 칼로리와 탄수화물·단백질·지방 양을 계산해요."),
+      h("p", { class: "small muted" }, t.need.includes("체중")
+        ? "체중은 아침 체중 기록의 추세를 써요. 오늘 탭에서 체중을 기록하거나 ‘정보 입력’에서 지금 체중을 넣으세요."
+        : "체중은 아침 체중 추세를 쓰니까, 살이 빠지면 목표도 같이 바뀌어요."));
+    return;
+  }
+  const applied = st.kcal === t.kcal && st.protein === t.protein && st.fat === t.fat && st.carbs === t.carbs;
+  chip.hidden = false;
+  chip.className = "chip" + (applied ? " hold" : "");
+  chip.textContent = applied ? "적용 중" : st.kcal ? `지금 목표 ${fmtInt(st.kcal)} kcal` : "아직 적용 안 함";
+  const macro = (cls, k, g, pc) => h("li", { class: cls },
+    h("span", { class: "k" }, k), h("span", { class: "v num" }, fmtInt(g), h("small", null, "g")), h("span", { class: "pc num" }, `${Math.round(pc)}%`));
+  const calc = h("div", { class: "dt-calc" },
+    t.useObs
+      ? h("p", null, "내 기록으로 본 유지 칼로리 ", h("b", null, `${fmtInt(t.tdee)} kcal`))
+      : h("p", null, t.ib ? `인바디 기초대사량 ${fmtInt(t.bmr)} kcal (${fmtMD(t.ib.date)})` : `기초대사량 ${fmtInt(t.bmr)} kcal (Mifflin-St Jeor 공식)`,
+        ` × 활동량 ${p.activity} = 유지 칼로리 `, h("b", null, `${fmtInt(t.formula)} kcal`)),
+    h("p", null, `− 주 ${fmtBand(p.rateKg)} ${u} 감량분 하루 ${fmtInt(t.deficit)} kcal = `, h("b", null, `${fmtInt(t.raw)} kcal`), t.raw < t.floor ? ` → 하한선 ${fmtInt(t.floor)} kcal` : ""),
+    h("p", null, `단백질 ${round1(t.protKg)} kg × ${p.proteinGpk} g · 지방은 칼로리의 ${p.fatPct}% · 나머지는 탄수화물`),
+    h("p", null, `체중 ${fmtMass(t.w.kg)} ${u} (${t.w.from})` + (t.protKg !== t.w.kg ? " · 단백질은 목표 체중 기준" : "")));
+  const o = t.obs;
+  const obsEl = o.tdee != null
+    ? h("div", { class: "dt-obs" },
+      h("p", { class: "small" }, `내 기록으로 본 유지 칼로리는 약 ${fmtInt(o.tdee)} kcal예요.`, h("span", { class: "muted" }, ` 최근 14일 중 ${o.n}일 기록, ${fmtRate(o.r.perWeek)}.`)),
+      h("button", { class: "btn small", type: "button", disabled: !canWrite(), onclick: () => saveProfile({ tdeeSource: t.useObs ? "formula" : "observed" }).catch(() => {}) },
+        t.useObs ? "공식으로 계산" : "기록으로 계산"))
+    : h("p", { class: "small muted" }, `식사를 14일 중 10일 이상 기록하고 체중 추세가 2주 쌓이면, 내 기록으로 실제 유지 칼로리도 계산해요 (지금 ${o.n}일 기록).`
+      + (p.tdeeSource === "observed" ? " 그때까지는 공식으로 계산해요." : ""));
+  const warns = [];
+  if (t.raw < t.floor) warns.push(`계산값 ${fmtInt(t.raw)} kcal가 안전 하한선보다 낮아서 ${fmtInt(t.floor)} kcal로 올렸어요. 전문가 관리 없이 이보다 적게 먹는 건 권하지 않아요. 감량 속도를 낮춰 보세요.`);
+  else if (t.deficit > t.tdee * 0.25) warns.push(`하루 ${fmtInt(t.deficit)} kcal를 줄이는 건 유지 칼로리의 ${Math.round((t.deficit / t.tdee) * 100)}%예요. 피로와 근손실이 커질 수 있으니 감량 속도를 낮추는 것도 생각해 보세요.`);
+  if (t.carbs < CARB_RNI) warns.push(`탄수화물이 하루 ${CARB_RNI} g(한국인 권장섭취량)보다 적어요. 지방 비율이나 감량 속도를 낮춰 보세요.`);
+  if (p.rateKg < st.rateMin - 0.005 || p.rateKg > st.rateMax + 0.005) warns.push(`목표 감량 속도(주 ${fmtBand(p.rateKg)} ${u})가 주간 점검 범위(주 ${fmtBand(st.rateMin)}–${fmtBand(st.rateMax)} ${u}) 밖이에요. 계획 탭 ‘목표와 단위’에서 범위를 맞추세요.`);
+  const apply = h("button", { class: "btn primary", type: "button", disabled: !canWrite() || applied }, applied ? "이 목표를 쓰고 있어요" : "이 목표 적용");
+  apply.addEventListener("click", () => {
+    apply.disabled = true;
+    saveSettings({ kcalTarget: t.kcal, proteinTarget: t.protein, fatTarget: t.fat, carbTarget: t.carbs })
+      .then(() => toast("목표를 적용했어요. 오늘 탭과 식단이 이 목표를 따라요."))
+      .catch(() => { apply.disabled = false; });
+  });
+  box.append(
+    h("p", { class: "dt-num" }, h("span", { class: "num", id: "dtKcal" }, fmtInt(t.kcal)), h("span", { class: "u" }, "kcal / 하루")),
+    macroBar(t.protein, t.carbs, t.fat),
+    h("ul", { class: "dt-macros", id: "dtMacros" }, macro("p", "단백질", t.protein, t.pct.protein), macro("c", "탄수화물", t.carbs, t.pct.carbs), macro("f", "지방", t.fat, t.pct.fat)),
+    calc, obsEl, ...warns.map(w => h("p", { class: "dt-warn" }, w)),
+    h("div", { class: "row" }, apply));
+}
+function openProfile() {
+  const p = profile(), u = bu(), d = state.selected;
+  const hasW = !!trendAt(d) || inbodies().some(r => r.date <= d && ibVal(r, "weight") != null);
+  openSheet("내 정보", panel => {
+    const sel = (id, opts, cur) => { const s = h("select", { id }, opts.map(([v, t]) => h("option", { value: String(v) }, t))); s.value = String(cur); return s; };
+    const unitBox = (input, unit) => h("div", { class: "input-unit" }, input, h("span", null, unit));
+    const sex = sel("fSex", [["", "고르세요"], ["m", "남성"], ["f", "여성"]], p.sex || "");
+    const age = h("input", { id: "fAge", inputmode: "numeric", autocomplete: "off", placeholder: "예: 23", value: p.age ?? "" });
+    const ht = h("input", { id: "fHt", inputmode: "decimal", autocomplete: "off", placeholder: "예: 175", value: p.heightCm ?? "" });
+    const wt = h("input", { id: "fWt", inputmode: "decimal", autocomplete: "off", value: p.weightKg != null ? String(round1(fromKg(p.weightKg, u))) : "" });
+    const goal = h("input", { id: "fGoal", inputmode: "decimal", autocomplete: "off", placeholder: "선택", value: p.goalKg != null ? String(round1(fromKg(p.goalKg, u))) : "" });
+    const act = sel("fAct", ACTIVITY.map(a => [a.v, `${a.label} · ×${a.v}`]), p.activity);
+    const rate = sel("fRate", RATES.map(r => [r, `주 ${fmtBand(r)} ${u}` + (r === 0.5 ? " (기본)" : "")]), p.rateKg);
+    const prot = sel("fProt", PROT_GPK.map(g => [g, `체중 1 kg당 ${g} g` + (g === 1.8 ? " (기본)" : "")]), p.proteinGpk);
+    const fat = sel("fFat", FAT_PCT.map(f => [f, `칼로리의 ${f}%` + (f === 25 ? " (기본)" : "")]), p.fatPct);
+    const msg = h("p", { class: "small muted wide", "aria-live": "polite" });
+    const btn = h("button", { class: "btn primary", type: "submit" }, "저장");
+    const form = h("form", { class: "est-grid" },
+      field("fSex", "성별", sex), field("fAge", "나이", unitBox(age, "세")), field("fHt", "키", unitBox(ht, "cm")),
+      hasW ? null : field("fWt", "지금 체중", unitBox(wt, u)),
+      field("fGoal", "목표 체중", unitBox(goal, u)),
+      field("fAct", "평소 활동량", act, "wide"),
+      h("p", { class: "small muted wide" }, "주 6회 운동(월·수·금 러닝, 화·목·토 헬스)은 ‘많이 움직여요’에 해당하지만, 하루 대부분을 앉아서 보내면 ‘보통’이 더 맞을 수 있어요. 2주쯤 기록한 뒤 ‘기록으로 계산’을 쓰면 실제 소모량에 맞춰져요."),
+      field("fRate", "감량 속도", rate), field("fProt", "단백질", prot), field("fFat", "지방", fat),
+      h("div", { class: "wide row" }, btn), msg);
+    form.addEventListener("submit", e => {
+      e.preventDefault();
+      const lo = u === "lb" ? 66 : 30, hi = u === "lb" ? 660 : 300;
+      const a = inRange(age.value, 18, 90), hc = inRange(ht.value, 120, 230);
+      const w = hasW ? null : inRange(wt.value, lo, hi), g = goal.value.trim() ? inRange(goal.value, lo, hi) : null;
+      if (!sex.value) { msg.textContent = "성별을 고르세요. 기초대사량 공식이 성별마다 달라요."; return; }
+      if (a == null) { msg.textContent = "나이를 18–90 사이로 입력하세요. 이 계산은 성인 기준이에요."; return; }
+      if (hc == null) { msg.textContent = "키를 cm로 입력하세요. 예: 175"; return; }
+      if (!hasW && w == null) { msg.textContent = `지금 체중을 ${u}로 입력하세요.`; return; }
+      if (goal.value.trim() && g == null) { msg.textContent = `목표 체중을 ${u}로 다시 확인하세요.`; return; }
+      btn.disabled = true; sheetBusy = true; msg.textContent = "저장 중…";
+      saveProfile({
+        sex: sex.value, age: Math.round(a), heightCm: round1(hc), weightKg: hasW ? p.weightKg : round2(toKg(w, u)), goalKg: g == null ? null : round2(toKg(g, u)),
+        activity: num(act.value), rateKg: num(rate.value), proteinGpk: num(prot.value), fatPct: num(fat.value),
+      }).then(() => { sheetBusy = false; closeSheet(true); toast("내 정보를 저장했어요."); })
+        .catch(() => { sheetBusy = false; btn.disabled = false; msg.textContent = "저장하지 못했어요. 다시 시도하세요."; });
+    });
+    panel.append(form);
+  });
+}
+
+/* ---------- diet: a week of meals written by Claude, scaled on this phone to the day's calorie target ---------- */
+const SLOTS = ["아침", "점심", "간식", "저녁"];
+const SLOT_TIME = { 아침: "08:00", 점심: "12:30", 간식: "16:00", 저녁: "19:00" };
+const CATS = ["채소·과일", "육류·해산물", "달걀·유제품·두부", "곡류·면·빵", "양념·소스", "기타"];
+const COUNT_UNITS = ["개", "장", "모", "팩", "봉", "캔", "줄", "알", "쪽", "단", "송이", "마리", "공기", "컵"];
+const PLAN_SYSTEM = "You plan meals for a personal diet and training log used in South Korea. Follow the instructions exactly. Reply with one JSON object only: no prose before or after it, no markdown code fences.";
+const clampTo = (v, lo, hi) => (v == null || !Number.isFinite(v) ? lo : Math.min(hi, Math.max(lo, v)));
+/* the stated calories must agree with 4/4/9 kcal per gram of protein, carbohydrate and fat; when they don't, the grams win */
+function macroOf(o) {
+  const prot = clampTo(num(o.prot), 0, 300), carb = clampTo(num(o.carb), 0, 600), fat = clampTo(num(o.fat), 0, 300);
+  const atw = 4 * prot + 4 * carb + 9 * fat;
+  let kcal = clampTo(num(o.kcal), 0, 4000);
+  if (atw > 0 && (kcal <= 0 || Math.abs(kcal - atw) / atw > 0.12)) kcal = atw;
+  return { kcal: Math.round(kcal), prot: round1(prot), carb: round1(carb), fat: round1(fat) };
+}
+/* accepts Claude's reply or a saved plan (same shape) and keeps only what the screens can trust */
+function normPlan(raw) {
+  const recipes = [], ids = new Set();
+  for (const r of (Array.isArray(raw.recipes) ? raw.recipes : []).slice(0, 16)) {
+    if (!isPlainObj(r) || typeof r.id !== "string" || !/^[A-Za-z0-9_-]{1,12}$/.test(r.id) || ids.has(r.id)) continue;
+    const ing = (Array.isArray(r.ing) ? r.ing : []).slice(0, 24).filter(isPlainObj).map(x => {
+      const cat = num(x.cat);
+      return { n: str(x.n, 40).trim(), q: clampTo(num(x.q), 0, 5000), u: str(x.u, 8).trim() || "g", cat: Number.isInteger(cat) && cat >= 0 && cat < CATS.length ? cat : CATS.length - 1 };
+    }).filter(x => x.n && x.q > 0);
+    const m = macroOf(r);
+    if (!ing.length || m.kcal < 30) continue;
+    ids.add(r.id);
+    recipes.push(Object.assign({ id: r.id, name: str(r.name, 60).trim() || "레시피", min: clampInt(num(r.min), 0, 240), ing,
+      steps: (Array.isArray(r.steps) ? r.steps : []).slice(0, 10).map(s => str(s, 220).trim()).filter(Boolean) }, m));
+  }
+  const rawDays = Array.isArray(raw.days) ? raw.days : [], days = [];
+  for (let i = 0; i < 7; i++) {
+    const day = isPlainObj(rawDays[i]) ? rawDays[i] : {}, meals = [];
+    for (const m of (Array.isArray(day.meals) ? day.meals : []).slice(0, 6)) {
+      if (!isPlainObj(m) || !SLOTS.includes(m.s)) continue;
+      if (typeof m.r === "string" && ids.has(m.r)) meals.push({ s: m.s, r: m.r, x: clampTo(num(m.x) ?? 1, 0.25, 3) });
+      else if (isPlainObj(m.out)) {
+        const mm = macroOf(m.out);
+        if (mm.kcal >= 30) meals.push({ s: m.s, out: Object.assign({ name: str(m.out.name, 60).trim() || "외식", tip: str(m.out.tip, 160).trim() }, mm) });
+      }
+    }
+    meals.sort((a, b) => SLOTS.indexOf(a.s) - SLOTS.indexOf(b.s));
+    days.push({ note: str(day.note, 160).trim(), meals });
+  }
+  return { recipes, days, tips: (Array.isArray(raw.tips) ? raw.tips : []).slice(0, 5).map(s => str(s, 160).trim()).filter(Boolean) };
+}
+function mealPlanDoc(mon) { const d = state.docs.get("mealplan_" + mon); return isPlainObj(d) ? d : null; }
+function readPlan(doc, mon) {
+  return Object.assign(normPlan(doc), {
+    id: "mealplan_" + mon, date: mon, pid: str(doc.pid, 12) || "p", checked: isPlainObj(doc.checked) ? doc.checked : {},
+    targets: isPlainObj(doc.targets) ? doc.targets : {}, createdAt: str(doc.createdAt, 40), usage: isPlainObj(doc.usage) ? doc.usage : null,
+  });
+}
+/* each day's home-cooked portions are scaled (0.7–1.3×, in 0.05 steps) so the day meets today's calorie target,
+   so a new target after a weekly check changes the portions without asking Claude again */
+function planView(plan) {
+  const target = settings().kcal || num(plan.targets.kcal) || null;
+  const byId = new Map(plan.recipes.map(r => [r.id, r]));
+  return plan.days.map((day, di) => {
+    let home = 0, out = 0;
+    for (const m of day.meals) { if (m.out) out += m.out.kcal; else home += byId.get(m.r).kcal * m.x; }
+    const f = target && home > 0 ? Math.min(1.3, Math.max(0.7, (target - out) / home)) : 1;
+    const meals = day.meals.map((m, mi) => {
+      if (m.out) return { mi, s: m.s, name: m.out.name, tip: m.out.tip, kcal: m.out.kcal, protein: m.out.prot, carbs: m.out.carb, fat: m.out.fat };
+      const r = byId.get(m.r), x = Math.max(0.25, Math.round(m.x * f * 20) / 20);
+      return { mi, s: m.s, name: r.name, recipe: r, x, kcal: r.kcal * x, protein: r.prot * x, carbs: r.carb * x, fat: r.fat * x };
+    });
+    return { di, date: addDays(plan.date, di), note: day.note, meals, target,
+      total: { kcal: sumOf(meals, "kcal"), protein: sumOf(meals, "protein"), carbs: sumOf(meals, "carbs"), fat: sumOf(meals, "fat") } };
+  });
+}
+function shoppingList(view) {
+  const map = new Map();
+  for (const day of view) for (const m of day.meals) {
+    if (!m.recipe) continue;
+    for (const g of m.recipe.ing) {
+      const key = `${g.n}|${g.u}`, cur = map.get(key) || { key, n: g.n, u: g.u, cat: g.cat, q: 0 };
+      cur.q += g.q * m.x;
+      map.set(key, cur);
+    }
+  }
+  return [...map.values()].sort((a, b) => a.cat - b.cat || a.n.localeCompare(b.n, "ko"));
+}
+/* grams round to what a scale shows; a shopping list rounds countable things up to whole ones */
+function fmtQty(q, u, buy) {
+  if (u === "g" || u === "ml") {
+    const r = q < 10 ? Math.max(1, Math.round(q)) : q < 100 ? Math.round(q / 5) * 5 : q < 1000 ? Math.round(q / 10) * 10 : Math.round(q / 50) * 50;
+    return r >= 1000 ? `${+(r / 1000).toFixed(2)} ${u === "g" ? "kg" : "L"}` : `${fmtInt(r)} ${u}`;
+  }
+  const r = buy && COUNT_UNITS.includes(u) ? Math.max(1, Math.ceil(q - 0.05)) : Math.max(0.5, Math.round(q * 2) / 2);
+  return (Number.isInteger(r) ? String(r) : r.toFixed(1)) + (/^[A-Za-z]/.test(u) ? " " : "") + u;
+}
+const fmtServ = x => `${+x.toFixed(2)}인분`;
+function planMealRow(plan, day, m) {
+  const ref = `${plan.pid}|${day.di}|${m.mi}`, logged = mealsOn(day.date).some(x => x.planRef === ref);
+  const sub = (m.recipe ? [fmtServ(m.x), m.recipe.min ? `${m.recipe.min}분` : ""] : [m.tip]).concat(`단백질 ${fmtInt(m.protein)} g`).filter(Boolean).join(" · ");
+  const main = m.recipe
+    ? h("button", { class: "mp-main", type: "button", onclick: () => openRecipe(m.recipe, m.x) }, h("span", { class: "mp-name link" }, m.name), h("span", { class: "mp-sub" }, sub))
+    : h("div", { class: "mp-main" }, h("span", { class: "mp-name" }, m.name), h("span", { class: "mp-sub" }, sub));
+  const eat = h("button", { class: "btn small eat" + (logged ? " done" : ""), type: "button", disabled: logged || !canWrite() || isFuture(day.date) }, logged ? "기록됨" : "먹었어요");
+  if (!logged) eat.addEventListener("click", () => { eat.disabled = true; eatFromPlan(plan, day, m).catch(() => { eat.disabled = false; }); });
+  return h("div", { class: "mp-meal" },
+    h("span", { class: "mp-slot" }, m.s), main,
+    h("span", { class: "mp-right" }, h("span", { class: "mp-k" }, h("b", { class: "num" }, fmtInt(m.kcal)), h("small", null, "kcal")), eat));
+}
+function eatFromPlan(plan, day, m) {
+  const ref = `${plan.pid}|${day.di}|${m.mi}`;
+  if (!canWrite() || isFuture(day.date) || mealsOn(day.date).some(x => x.planRef === ref)) return Promise.resolve();
+  const t = SLOT_TIME[m.s] || "12:00";
+  const body = {
+    kind: "meal", date: day.date, time: t, name: m.name.slice(0, 80),
+    kcal: Math.round(m.kcal), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat),
+    assumptions: (m.recipe
+      ? `식단표 레시피 ${fmtServ(m.x)}: ` + m.recipe.ing.map(g => `${g.n} ${fmtQty(g.q * m.x, g.u)}`).join(", ")
+      : "식단표의 외식 예상치" + (m.tip ? `. ${m.tip}` : "")).slice(0, 240),
+    source: "plan", planRef: ref, createdAt: new Date().toISOString(),
+  };
+  return save(newMealId(day.date, t), body).then(() => toast(`${m.s} 식사를 기록했어요.`));
+}
+function openRecipe(r, x) {
+  openSheet(r.name, panel => {
+    panel.append(
+      h("p", { class: "small muted" }, [fmtServ(x), r.min ? `약 ${r.min}분` : ""].filter(Boolean).join(" · ")),
+      h("p", { class: "rc-macros" },
+        h("span", null, h("b", { class: "num" }, fmtInt(r.kcal * x)), " kcal"), h("span", { class: "p" }, "단백질 ", h("b", { class: "num" }, fmtInt(r.prot * x)), " g"),
+        h("span", { class: "c" }, "탄수화물 ", h("b", { class: "num" }, fmtInt(r.carb * x)), " g"), h("span", { class: "f" }, "지방 ", h("b", { class: "num" }, fmtInt(r.fat * x)), " g")),
+      h("h4", { class: "rc-h" }, "재료"),
+      h("ul", { class: "rc-ing" }, r.ing.map(g => h("li", null, h("span", null, g.n), h("span", { class: "num muted" }, fmtQty(g.q * x, g.u))))));
+    if (r.steps.length) panel.append(h("h4", { class: "rc-h" }, "만드는 법"), h("ol", { class: "rc-steps" }, r.steps.map(s => h("li", null, s))));
+    panel.append(h("p", { class: "small muted" }, "영양값은 재료 양으로 계산한 추정치예요. 알레르기가 있으면 재료를 꼭 확인하세요."));
+  });
+}
+function renderTodayPlan() {
+  const sec = $("#todayPlan"), d = state.selected, mon = mondayOf(d), doc = mealPlanDoc(mon);
+  const day = doc ? planView(readPlan(doc, mon))[daysBetween(mon, d)] : null;
+  sec.hidden = !day || !day.meals.length;
+  if (sec.hidden) return;
+  const plan = readPlan(doc, mon);
+  $("#todayPlanH").textContent = d === state.today ? "오늘의 식단" : `${fmtDay(d)} 식단`;
+  $("#todayPlanList").replaceChildren(...day.meals.map(m => planMealRow(plan, day, m)));
+}
+function renderMealPlan() {
+  const mon = mondayOf(state.selected), thisMon = mondayOf(state.today), doc = mealPlanDoc(mon), t = fullTargets(), key = !!aiKey();
+  $("#mpH").textContent = mon === thisMon ? "이번 주 식단" : mon === addDays(thisMon, 7) ? "다음 주 식단" : `${fmtMD(mon)} 주 식단`;
+  const gen = $("#mpGen");
+  gen.textContent = doc ? "다시 만들기" : "식단 만들기";
+  gen.disabled = !canWrite() || !key || !t;
+  $("#shopSec").hidden = !doc;
+  $("#recSec").hidden = !doc;
+  const body = $("#mpBody"), note = $("#mpNote");
+  body.replaceChildren();
+  if (!doc) {
+    body.append(h("div", { class: "mp-empty" }, !key
+      ? [h("p", null, "식단은 내 Anthropic API 키로 Claude가 짜요."), h("p", { class: "small muted" }, "계획 탭 → ‘데이터와 AI’에서 키를 넣으면 쓸 수 있어요."), h("a", { class: "btn small", href: "#plan" }, "API 키 넣으러 가기")]
+      : !t ? [h("p", null, "식단을 짜려면 하루 칼로리와 단백질 목표가 있어야 해요."), h("p", { class: "small muted" }, "위의 ‘하루 목표’를 계산해서 적용하세요.")]
+      : [h("p", null, "목표에 맞춘 월–일 7일 식단과 레시피, 장보기 목록을 만들어요."),
+        h("p", { class: "small muted" }, `하루 ${fmtInt(t.kcal)} kcal · 단백질 ${fmtInt(t.protein)} g · 탄수화물 ${fmtInt(t.carbs)} g · 지방 ${fmtInt(t.fat)} g 기준이에요. 운동하는 날과 쉬는 날을 나눠 짜고, 같은 레시피를 여러 번 써서 장보기를 줄여요. 만드는 데 1–2분 걸려요.`)]));
+    note.textContent = "";
+    return;
+  }
+  const plan = readPlan(doc, mon), view = planView(plan), day = view[daysBetween(mon, state.selected)];
+  const dev = day.target ? Math.round((day.total.kcal / day.target - 1) * 100) : null;
+  body.append(
+    h("div", { class: "mp-days", role: "group", "aria-label": "요일 고르기" }, view.map(v => h("button", {
+      class: "mp-day", type: "button", "aria-pressed": String(v.date === state.selected), "aria-label": fmtDayLong(v.date), onclick: () => select(v.date),
+    }, h("span", { class: "d" }, DOW[weekday(v.date)]), h("span", { class: "n num" }, String(fromYmd(v.date).getDate()))))),
+    day.meals.length ? h("div", { class: "mp-list" }, day.meals.map(m => planMealRow(plan, day, m))) : h("p", { class: "empty" }, "이 날은 식단이 비어 있어요."),
+    h("div", { class: "mp-total" },
+      h("p", null, "합계 ", h("b", { class: "num", id: "mpTotalK" }, `${fmtInt(day.total.kcal)} kcal`),
+        day.target ? h("span", { class: dev != null && Math.abs(dev) > 7 ? "warn-text" : "muted" }, ` · 목표 ${fmtInt(day.target)} kcal (${dev > 0 ? "+" : dev < 0 ? MINUS : "±"}${Math.abs(dev)}%)`) : null),
+      h("p", { class: "muted" }, `단백질 ${fmtInt(day.total.protein)} g · 탄수화물 ${fmtInt(day.total.carbs)} g · 지방 ${fmtInt(day.total.fat)} g`)));
+  if (day.note) body.append(h("p", { class: "mp-note" }, day.note));
+  const u = plan.usage, made = plan.createdAt && new Date(plan.createdAt);
+  note.textContent = "AI가 짠 식단이에요. 영양값은 재료 양으로 계산한 추정치이고, 하루 목표가 바뀌면 집밥 양(인분)을 자동으로 맞춰요. 알레르기가 있으면 재료를 꼭 확인하세요."
+    + (made && made.getTime() > 0 ? ` ${fmtMD(ymd(made))}에 만듦` + (u ? ` · 입력 ${fmtInt(num(u.input) || 0)} · 출력 ${fmtInt(num(u.output) || 0)} 토큰.` : ".") : "");
+  renderShopping(plan, view);
+  renderRecipes(plan, view);
+}
+function renderShopping(plan, view) {
+  const items = shoppingList(view), box = $("#shopBody"), left = items.filter(i => !plan.checked[i.key]).length;
+  box.replaceChildren(h("p", { class: "small muted" }, !items.length ? "집밥 재료가 없어요." : left ? `${items.length}가지 중 ${left}가지 남았어요.` : "다 샀어요."));
+  let n = 0;
+  for (let ci = 0; ci < CATS.length; ci++) {
+    const list = items.filter(i => i.cat === ci);
+    if (!list.length) continue;
+    box.append(h("div", { class: "shop-group" }, h("h3", null, CATS[ci]), h("ul", null, list.map(it => {
+      const id = "shop" + n++, on = !!plan.checked[it.key];
+      const cb = h("input", { type: "checkbox", id, checked: on, disabled: !canWrite() });
+      cb.addEventListener("change", () => toggleShop(plan.id, it.key, cb.checked));
+      return h("li", null, h("label", { class: "shop-item" + (on ? " done" : ""), for: id }, cb, h("span", { class: "nm" }, it.n), h("span", { class: "q" }, fmtQty(it.q, it.u, true))));
+    }))));
+  }
+  $("#shopCopy").disabled = !items.length;
+}
+function toggleShop(id, key, on) {
+  const cur = state.docs.get(id);
+  if (!isPlainObj(cur)) return;
+  const checked = Object.assign({}, isPlainObj(cur.checked) ? cur.checked : {});
+  if (on) checked[key] = true; else delete checked[key];
+  save(id, Object.assign({}, cur, { checked })).catch(() => {});
+}
+async function copyShopping() {
+  const mon = mondayOf(state.selected), doc = mealPlanDoc(mon);
+  if (!doc) return;
+  const plan = readPlan(doc, mon), items = shoppingList(planView(plan)), left = items.filter(i => !plan.checked[i.key]), use = left.length ? left : items;
+  const lines = [`장보기 · ${fmtMD(mon)} 주`];
+  for (let ci = 0; ci < CATS.length; ci++) {
+    const list = use.filter(i => i.cat === ci);
+    if (list.length) lines.push("", `[${CATS[ci]}]`, ...list.map(i => `- ${i.n} ${fmtQty(i.q, i.u, true)}`));
+  }
+  const text = lines.join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(left.length && left.length < items.length ? `아직 안 산 재료 ${left.length}가지를 복사했어요.` : `재료 ${use.length}가지를 복사했어요.`);
+  } catch (e) {
+    openSheet("장보기 목록", panel => {
+      const ta = h("textarea", { rows: 14, readonly: true, "aria-label": "장보기 목록" });
+      ta.value = text;
+      panel.append(h("p", { class: "small muted" }, "자동으로 복사하지 못했어요. 길게 눌러 전체 선택한 뒤 복사하세요."), ta);
+    });
+  }
+}
+function renderRecipes(plan, view) {
+  const uses = new Map();
+  for (const d of view) for (const m of d.meals) if (m.recipe) uses.set(m.recipe.id, (uses.get(m.recipe.id) || 0) + 1);
+  $("#recH").textContent = `레시피 ${plan.recipes.length}가지`;
+  const box = $("#recBody");
+  box.replaceChildren(
+    h("ul", { class: "rec-list" }, plan.recipes.map(r => h("li", null, h("button", { class: "rec-btn", type: "button", onclick: () => openRecipe(r, 1) },
+      h("span", { class: "nm" }, r.name),
+      h("span", { class: "small muted" }, [uses.get(r.id) ? `${uses.get(r.id)}번 먹어요` : "", r.min ? `${r.min}분` : "", `1인분 ${fmtInt(r.kcal)} kcal · 단백질 ${fmtInt(r.prot)} g`].filter(Boolean).join(" · ")))))));
+  if (plan.tips.length) box.append(h("div", { class: "rec-tips" }, h("h3", null, "미리 해 두면 좋은 것"), h("ul", null, plan.tips.map(s => h("li", null, s)))));
+}
+function planPrompt(t, prefs, mon) {
+  const EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const gym = { A: "gym, upper body, about 70 minutes including 20 minutes on a stair climber", B: "gym, full body, about 70 minutes including 20 minutes on a stair climber", C: "gym, legs, the hardest session of the week, about 70 minutes" };
+  const week = [];
+  for (let i = 0; i < 7; i++) { const p = planFor(addDays(mon, i)); week.push(`- ${DOW[(i + 1) % 7]} (${EN[i]}): ${p.kind === "run" ? "running" : p.kind === "gym" ? gym[p.key] : "rest day"}`); }
+  const cook = ({
+    quick: "Keep every recipe to 15 minutes or less of hands-on cooking.",
+    normal: "Recipes can take up to 30 minutes.",
+    prep: "The person cooks in big batches on the weekend: main dishes must keep 3 to 4 days in the fridge, and weekday meals should only need reheating or assembling.",
+  })[prefs.cook] || "Keep every recipe to 15 minutes or less of hands-on cooking.";
+  return [
+    "Plan one week of meals, Monday to Sunday, for one adult in South Korea who is losing fat while strength training and running.",
+    `Daily targets, the same every day: ${t.kcal} kcal, protein at least ${t.protein} g, carbohydrate about ${t.carbs} g, fat about ${t.fat} g. Each day's total must be within 5% of ${t.kcal} kcal.`,
+    "Training this week:", ...week,
+    "On training days put more of the day's carbohydrate in the meals before and after training. Spread protein over the day, at least 25 g in each main meal.",
+    `Meals every day, in this order: ${prefs.snack ? "아침, 점심, 간식, 저녁" : "아침, 점심, 저녁"}. Use exactly these Korean slot names in "s".`,
+    prefs.eatOut
+      ? 'Monday to Friday 점심 is eaten at a university cafeteria (학식) or a restaurant. For those meals give no recipe: give an "out" entry with a typical Korean choice that fits the targets, one short tip on how much to eat, and typical nutrition for that portion.'
+      : "Every meal is cooked at home from one of the recipes.",
+    cook,
+    prefs.avoid ? `Never use these foods or anything made from them: ${prefs.avoid}` : "",
+    prefs.likes ? `The person likes or already has these; use them where they fit: ${prefs.likes}` : "",
+    "Recipes:",
+    "- Write 5 to 9 recipes and use each on at least two days, so the week needs little cooking and a short shopping list.",
+    "- Breakfast recipes take 10 minutes or less. Use ingredients sold at ordinary Korean supermarkets.",
+    "- Ingredient amounts are for ONE serving: grams or ml where possible, eggs in 개, seasonings in 큰술 or 작은술.",
+    "- Nutrition is for ONE serving, computed from those ingredient amounts with standard food composition values such as the Korean national food composition table. Rice means cooked rice; meat is raw weight. kcal must equal 4×prot + 4×carb + 9×fat within 5%.",
+    "- At most 5 short steps per recipe.",
+    '- A meal can use more or less than one serving of a recipe with "x" (0.5 to 2) so the day meets its targets.',
+    "Ingredient category numbers: 0 채소·과일, 1 육류·해산물, 2 달걀·유제품·두부, 3 곡류·면·빵, 4 양념·소스, 5 기타.",
+    "Write every name, ingredient, step, note and tip in natural Korean.",
+    "Reply with only a JSON object of this shape:",
+    '{"recipes":[{"id":"r1","name":"레시피 이름","min":10,"ing":[{"n":"재료","q":150,"u":"g","cat":1}],"steps":["짧은 한 문장"],"kcal":0,"prot":0,"carb":0,"fat":0}],'
+      + '"days":[{"day":"월","note":"이 날의 짧은 팁 한 문장","meals":[{"s":"아침","r":"r1","x":1}'
+      + (prefs.eatOut ? ',{"s":"점심","out":{"name":"학식 메뉴","tip":"양 조절 팁","kcal":0,"prot":0,"carb":0,"fat":0}}' : "")
+      + ']}],"tips":["주말에 미리 해 두면 좋은 준비 한 문장"]}',
+    '"days" has exactly 7 entries, Monday first. Every "r" is the id of a recipe in "recipes". Use whole numbers for kcal and grams.',
+  ].filter(Boolean).join("\n");
+}
+function openPlanMaker() {
+  const t = fullTargets(), mon = mondayOf(state.selected), id = "mealplan_" + mon, had = state.docs.has(id), pr = profile().prefs;
+  if (!t || !aiKey() || !canWrite()) return;
+  let ctl = null;
+  openSheet(`${fmtMD(mon)} 주 식단 만들기`, panel => {
+    const avoid = h("input", { id: "gAvoid", autocomplete: "off", placeholder: "예: 땅콩, 새우, 오이", value: str(pr.avoid, 120) });
+    const likes = h("input", { id: "gLikes", autocomplete: "off", placeholder: "예: 닭가슴살, 두부, 고구마, 김치", value: str(pr.likes, 120) });
+    const cook = h("select", { id: "gCook" }, [["quick", "간단하게 (한 끼 15분 이내)"], ["normal", "보통 (30분 이내)"], ["prep", "주말에 몰아서 만들어 두기"]].map(([v, l]) => h("option", { value: v }, l)));
+    cook.value = ["quick", "normal", "prep"].includes(pr.cook) ? pr.cook : "quick";
+    const out = h("input", { id: "gOut", type: "checkbox", checked: pr.eatOut === true });
+    const snack = h("input", { id: "gSnack", type: "checkbox", checked: pr.snack !== false });
+    const go = h("button", { class: "btn primary", type: "button" }, had ? "새로 만들기" : "만들기");
+    const stop = h("button", { class: "btn", type: "button", hidden: true }, "중지");
+    const msg = h("p", { class: "small muted", "aria-live": "polite" }, had ? "지금 식단은 새 식단으로 바뀌어요. ‘먹었어요’로 기록한 식사는 그대로 남아요." : "1–2분 걸려요. 만드는 동안 화면을 켜 두세요.");
+    stop.addEventListener("click", () => { if (ctl) ctl.abort(); });
+    go.addEventListener("click", async () => {
+      const prefs = { avoid: avoid.value.trim().slice(0, 120), likes: likes.value.trim().slice(0, 120), cook: cook.value, eatOut: out.checked, snack: snack.checked };
+      ctl = new AbortController();
+      go.disabled = true; stop.hidden = false; sheetBusy = true;
+      const t0 = Date.now();
+      let progress = "Claude에게 요청하는 중…", lock = null;
+      const show = () => { msg.textContent = `${progress} ${Math.round((Date.now() - t0) / 1000)}초`; };
+      show();
+      const tick = setInterval(show, 1000);
+      try { if (navigator.wakeLock && navigator.wakeLock.request) lock = await navigator.wakeLock.request("screen"); } catch (e) { lock = null; }
+      try {
+        saveProfile({ prefs }).catch(() => {});
+        const res = await callClaudeStream({
+          content: [{ type: "text", text: planPrompt(t, prefs, mon) }], maxTokens: 12000, signal: ctl.signal, model: aiModel(), key: aiKey(), system: PLAN_SYSTEM,
+          onText: txt => {
+            const nr = (txt.match(/"steps"\s*:/g) || []).length, nd = (txt.match(/"meals"\s*:/g) || []).length;
+            progress = nd ? `요일별 식단을 쓰는 중 (${Math.min(nd, 7)}/7)` : nr ? `레시피를 쓰는 중 (${nr}개)` : "쓰기 시작했어요";
+          },
+        });
+        if (res.stop === "refusal") throw aiErr("refused");
+        const raw = parseJsonLoose(res.text);
+        if (!isPlainObj(raw)) throw aiErr(res.stop === "max_tokens" ? "truncated" : "invalid_json");
+        const plan = normPlan(raw);
+        if (plan.recipes.length < 2 || plan.days.some(d => !d.meals.length)) throw aiErr(res.stop === "max_tokens" ? "truncated" : "invalid_plan");
+        await save(id, Object.assign({
+          kind: "mealplan", date: mon, pid: Math.random().toString(36).slice(2, 8), createdAt: new Date().toISOString(),
+          model: aiModel(), targets: t, prefs, usage: res.usage, checked: {},
+        }, plan));
+        clearInterval(tick);
+        sheetBusy = false;
+        closeSheet(true);
+        toast(`${fmtMD(mon)} 주 식단을 만들었어요.`);
+      } catch (e) {
+        clearInterval(tick);
+        msg.textContent = e && e.code === "cancelled" ? "중지했어요." : sampleCopy(e && e.code, e && e.detail);
+      } finally {
+        clearInterval(tick);
+        if (lock) lock.release().catch(() => {});
+        go.disabled = false; stop.hidden = true; sheetBusy = false; ctl = null;
+      }
+    });
+    panel.append(
+      h("p", { class: "small" }, `하루 ${fmtInt(t.kcal)} kcal · 단백질 ${fmtInt(t.protein)} g · 탄수화물 ${fmtInt(t.carbs)} g · 지방 ${fmtInt(t.fat)} g`),
+      h("div", { class: "est-grid" },
+        field("gAvoid", "빼야 할 음식 (알레르기·못 먹는 것)", avoid, "wide"),
+        field("gLikes", "넣고 싶은 음식·집에 있는 재료", likes, "wide"),
+        field("gCook", "요리 방식", cook, "wide"),
+        h("label", { class: "check wide", for: "gOut" }, out, "평일 점심은 학식이나 외식이에요"),
+        h("label", { class: "check wide", for: "gSnack" }, snack, "간식도 넣어 주세요")),
+      h("div", { class: "row" }, go, stop), msg,
+      h("p", { class: "small muted" }, "내 API 키로 Claude에 한 번 요청해요. 보내는 건 목표 숫자, 운동 요일, 위에 적은 내용뿐이고 기록이나 사진은 보내지 않아요. 쓴 토큰 수는 식단 아래에 보여 줘요."));
+  }, () => { if (ctl) ctl.abort(); });
+}
+
+/* ---------- body change: progress photos (눈바디) and tape measurements, one entry per day ---------- */
+const POSES = [{ key: "front", label: "정면" }, { key: "side", label: "측면" }, { key: "back", label: "후면" }];
+const CM_FIELDS = [
+  { key: "waist", label: "허리", hint: "배꼽 높이" },
+  { key: "hip", label: "엉덩이", hint: "가장 넓은 곳" },
+  { key: "chest", label: "가슴", hint: "가장 넓은 곳" },
+  { key: "arm", label: "팔", hint: "위팔 가장 굵은 곳, 힘 빼고" },
+  { key: "thigh", label: "허벅지", hint: "가장 굵은 곳" },
+];
+const bodyLogs = () => docsOf("body").filter(r => isYmd(r.date)).sort((a, b) => a.date.localeCompare(b.date));
+const cmVal = (r, key) => { const v = num(r && isPlainObj(r.cm) ? r.cm[key] : null); return v == null || v < 20 || v > 250 ? null : v; };
+const photoOf = (r, pose, full) => {
+  const src = r && (full ? r.photos : r.thumbs), v = isPlainObj(src) ? src[pose] : null;
+  return typeof v === "string" && v.startsWith("data:image/") ? v : null;
+};
+/* the weight trend near a photo date, so two photos can be read together with the scale */
+function trendNear(d) { const tp = trendAt(d); return tp && daysBetween(tp.date, d) <= 3 ? tp.trend : null; }
+function renderBody() {
+  const box = $("#bodyBody"), list = bodyLogs(), d = state.selected, u = bu();
+  const btn = $("#bodyAddBtn");
+  btn.textContent = state.docs.has("body_" + d) ? "이 날 기록 고치기" : "기록하기";
+  btn.disabled = !canWrite() || isFuture(d);
+  box.replaceChildren();
+  if (!list.length) {
+    box.append(h("p", { class: "empty" }, !state.loaded ? "기록을 불러오는 중…"
+      : "아직 몸 변화 기록이 없어요. 2주에 한 번쯤 사진(눈바디)과 허리 둘레를 남겨 두면, 체중이 그대로인 주에도 몸이 바뀌는 게 보여요."));
+    return;
+  }
+  const withPose = pose => list.filter(r => photoOf(r, pose));
+  const pose = POSES.find(p => withPose(p.key).length >= 2) || POSES.find(p => withPose(p.key).length);
+  if (pose) {
+    const ps = withPose(pose.key), a = ps[0], b = ps[ps.length - 1];
+    const fig = (r, cap) => {
+      const w = trendNear(r.date);
+      return h("figure", { class: "bc-fig" }, h("img", { src: photoOf(r, pose.key), alt: `${fmtDay(r.date)} ${pose.label} 사진` }),
+        h("figcaption", null, h("b", null, cap), ` ${fmtMD(r.date)}` + (w != null ? ` · ${fmtMass(w)} ${u}` : "")));
+    };
+    box.append(h("button", { class: "bc-compare", type: "button", onclick: () => openCompare(pose.key, a.date, b.date) },
+      h("span", { class: "bc-pair" }, ps.length >= 2 ? [fig(a, "처음"), fig(b, "최근")] : [fig(a, `${pose.label} 첫 사진`)]),
+      h("span", { class: "bc-hint" }, ps.length >= 2 ? `${pose.label} · 눌러서 크게 비교하기` : "다음에 같은 자세로 찍으면 나란히 비교해요")));
+  }
+  const grid = h("div", { class: "ib-grid" });
+  for (const f of CM_FIELDS) {
+    const has = list.filter(r => cmVal(r, f.key) != null);
+    if (!has.length) continue;
+    const first = has[0], last = has[has.length - 1], v = cmVal(last, f.key), dlt = has.length > 1 ? v - cmVal(first, f.key) : null;
+    grid.append(h("div", { class: "ib-stat" },
+      h("span", { class: "k" }, f.label),
+      h("span", { class: "v" }, v.toFixed(1), h("small", null, " cm")),
+      h("span", { class: "d" }, dlt == null ? `${fmtMD(last.date)} 첫 기록` : `${fmtSigned(dlt, 1)} cm · ${fmtMD(first.date)}부터`)));
+  }
+  if (grid.childNodes.length) box.append(grid);
+  const waist = list.filter(r => cmVal(r, "waist") != null);
+  if (waist.length >= 2) box.append(h("div", { class: "ib-charts" }, miniChart(waist, "waist", "w", "허리 둘레 (cm)", r => cmVal(r, "waist"))));
+  box.append(h("ul", { class: "bc-list" }, list.slice().reverse().slice(0, 12).map(r => {
+    const thumbs = POSES.map(p => photoOf(r, p.key)).filter(Boolean);
+    const cms = CM_FIELDS.filter(f => cmVal(r, f.key) != null).map(f => `${f.label} ${cmVal(r, f.key).toFixed(1)}`);
+    return h("li", null, h("button", { class: "bc-row", type: "button", "aria-label": `${fmtDay(r.date)} 몸 변화 기록 열기`, onclick: () => openBodyEntry(r.date) },
+      h("span", { class: "bc-date num" }, fmtDM(r.date)),
+      h("span", { class: "bc-thumbs" }, thumbs.map(src => h("img", { src, alt: "" }))),
+      h("span", { class: "bc-cm" }, cms.length ? cms.join(" · ") + " cm" : str(r.note, 60) || (thumbs.length ? `사진 ${thumbs.length}장` : ""))));
+  })));
+}
+/* photos keep 1080 px on the long edge for comparing, plus a 360 px copy for lists, so lists stay fast */
+async function decodeImage(file) {
+  if (window.createImageBitmap) {
+    try { const b = await createImageBitmap(file, { imageOrientation: "from-image" }); return { src: b, w: b.width, hh: b.height, done: () => b.close && b.close() }; }
+    catch (e) { /* fall back to an <img> below */ }
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("decode")); i.src = url; });
+    return { src: im, w: im.naturalWidth, hh: im.naturalHeight, done: () => URL.revokeObjectURL(url) };
+  } catch (e) { URL.revokeObjectURL(url); throw e; }
+}
+async function prepPhoto(file) {
+  const img = await decodeImage(file);
+  try {
+    return { full: canvasFor(img.src, img.w, img.hh, 1080).toDataURL("image/jpeg", 0.78), thumb: canvasFor(img.src, img.w, img.hh, 360).toDataURL("image/jpeg", 0.7) };
+  } finally { img.done(); }
+}
+function openBodyEntry(date) {
+  const id = "body_" + date, cur = state.docs.get(id) || {};
+  const photos = {}, thumbs = {};
+  for (const p of POSES) { const f = photoOf(cur, p.key, true), t = photoOf(cur, p.key); if (f || t) { photos[p.key] = f || t; thumbs[p.key] = t || f; } }
+  let pending = 0;
+  openSheet(`${fmtDay(date)} 몸 변화`, panel => {
+    const msg = h("p", { class: "small muted", "aria-live": "polite" });
+    const slots = POSES.map(p => {
+      const file = h("input", { id: "bf_" + p.key, type: "file", accept: "image/*", class: "file-input" });
+      const img = h("img", { alt: "", hidden: !thumbs[p.key] });
+      if (thumbs[p.key]) img.src = thumbs[p.key];
+      const ph = h("span", { class: "bc-ph", hidden: !!thumbs[p.key] }, "+ 사진");
+      const del = h("button", { class: "bc-del", type: "button", "aria-label": `${p.label} 사진 빼기`, hidden: !thumbs[p.key] }, "×");
+      file.addEventListener("change", async () => {
+        const f = file.files && file.files[0];
+        file.value = "";
+        if (!f) return;
+        pending++; msg.textContent = "사진을 준비하는 중…";
+        try {
+          const out = await prepPhoto(f);
+          photos[p.key] = out.full; thumbs[p.key] = out.thumb;
+          img.src = out.thumb; img.hidden = false; ph.hidden = true; del.hidden = false; msg.textContent = "";
+        } catch (e) { msg.textContent = "이미지를 읽지 못했어요. JPEG나 PNG로 해 보세요."; }
+        finally { pending--; }
+      });
+      del.addEventListener("click", () => { delete photos[p.key]; delete thumbs[p.key]; img.hidden = true; img.removeAttribute("src"); ph.hidden = false; del.hidden = true; });
+      return h("div", { class: "bc-slot" }, file, h("label", { for: "bf_" + p.key, class: "bc-pick", "aria-label": `${p.label} 사진 고르기` }, img, ph), h("span", { class: "bc-slot-k" }, p.label), del);
+    });
+    const cmIn = CM_FIELDS.map(f => {
+      const v = cmVal(cur, f.key);
+      return { f, el: h("input", { id: "bc_" + f.key, inputmode: "decimal", autocomplete: "off", value: v != null ? String(v) : "" }) };
+    });
+    const note = h("textarea", { id: "bcNote", rows: 2, placeholder: "예: 아침 공복, 같은 거울 앞" });
+    note.value = str(cur.note, 300);
+    const btn = h("button", { class: "btn primary", type: "submit" }, "저장");
+    const del = state.docs.has(id) ? h("button", { class: "btn danger", type: "button", onclick: () => confirmDeleteBody(date) }, "이 날 기록 삭제") : null;
+    const form = h("form", { class: "bc-form" },
+      h("div", { class: "bc-slots" }, slots),
+      h("p", { class: "small muted" }, "같은 장소, 같은 조명, 같은 거리에서 찍으세요. 아침 공복에 찍으면 비교하기 좋아요. 사진은 이 휴대폰에만 저장돼요."),
+      h("div", { class: "est-grid" }, cmIn.map(({ f, el }) => field("bc_" + f.key, `${f.label} (${f.hint})`, h("div", { class: "input-unit" }, el, h("span", null, "cm"))))),
+      field("bcNote", "메모", note),
+      h("div", { class: "row" }, btn, del), msg);
+    form.addEventListener("submit", e => {
+      e.preventDefault();
+      if (pending) { msg.textContent = "사진을 준비하고 있어요. 잠시 뒤에 저장하세요."; return; }
+      const cm = {};
+      for (const { f, el } of cmIn) {
+        if (!el.value.trim()) continue;
+        const v = inRange(el.value, 20, 250);
+        if (v == null) { msg.textContent = `${f.label} 둘레를 cm로 다시 확인하세요. 예: 82.5`; el.focus(); return; }
+        cm[f.key] = round1(v);
+      }
+      if (!Object.keys(photos).length && !Object.keys(cm).length && !note.value.trim()) { msg.textContent = "사진이나 둘레를 하나 이상 넣으세요."; return; }
+      btn.disabled = true; sheetBusy = true; msg.textContent = "저장 중…";
+      const now = new Date().toISOString();
+      save(id, { kind: "body", date, photos, thumbs, cm, note: note.value.trim().slice(0, 300), createdAt: str(cur.createdAt, 40) || now, updatedAt: now })
+        .then(() => { sheetBusy = false; closeSheet(true); toast("몸 변화를 저장했어요."); })
+        .catch(() => { sheetBusy = false; btn.disabled = false; msg.textContent = "저장하지 못했어요. 저장 공간이 부족하면 백업을 내보낸 뒤 오래된 사진을 지워 보세요."; });
+    });
+    panel.append(form);
+  });
+}
+function confirmDeleteBody(date) {
+  openSheet("이 날 몸 변화 기록을 삭제할까요?", panel => {
+    const msg = h("p", { class: "small muted", "aria-live": "polite" });
+    const del = h("button", { class: "btn danger", type: "button" }, "삭제");
+    const keep = h("button", { class: "btn", type: "button", onclick: () => closeSheet(true) }, "취소");
+    del.addEventListener("click", () => {
+      sheetBusy = true; del.disabled = true;
+      removeDoc("body_" + date).then(() => { sheetBusy = false; closeSheet(true); toast("몸 변화 기록을 삭제했어요."); })
+        .catch(() => { sheetBusy = false; del.disabled = false; msg.textContent = "삭제하지 못했어요. 다시 시도하세요."; });
+    });
+    panel.append(h("p", null, `${fmtDay(date)}의 사진과 둘레 기록이 삭제돼요. 백업 파일에 있는 건 그대로예요.`), h("div", { class: "row" }, del, keep), msg);
+  });
+}
+function openCompare(pose, aDate, bDate) {
+  openSheet("사진 비교", panel => {
+    const cur = { pose, a: aDate, b: bDate };
+    const segBox = h("div", { class: "row" }), pick = h("div", { class: "est-grid" }), pair = h("div", { class: "bc-big" });
+    const draw = () => {
+      const list = bodyLogs(), poses = POSES.filter(p => list.some(r => photoOf(r, p.key)));
+      if (!poses.some(p => p.key === cur.pose)) cur.pose = poses.length ? poses[0].key : cur.pose;
+      const dates = list.filter(r => photoOf(r, cur.pose)).map(r => r.date);
+      if (!dates.includes(cur.a)) cur.a = dates[0];
+      if (!dates.includes(cur.b)) cur.b = dates[dates.length - 1];
+      segBox.replaceChildren(h("span", { class: "seg", role: "group", "aria-label": "자세" }, poses.map(p => h("button", {
+        type: "button", class: "seg-btn", "aria-pressed": String(p.key === cur.pose), onclick: () => { cur.pose = p.key; draw(); },
+      }, p.label))));
+      const sel = (id, label, keyName) => {
+        const s = h("select", { id }, dates.map(d => h("option", { value: d }, fmtDay(d))));
+        s.value = cur[keyName];
+        s.addEventListener("change", () => { cur[keyName] = s.value; draw(); });
+        return field(id, label, s);
+      };
+      pick.replaceChildren(sel("cmpA", "이전", "a"), sel("cmpB", "이후", "b"));
+      const fig = d => {
+        const r = state.docs.get("body_" + d), w = trendNear(d), wv = cmVal(r, "waist");
+        return h("figure", { class: "bc-fig big" }, h("img", { src: photoOf(r, cur.pose, true) || photoOf(r, cur.pose), alt: `${fmtDay(d)} 사진` }),
+          h("figcaption", null, h("b", null, fmtMD(d)), [w != null ? `${fmtMass(w)} ${bu()}` : "", wv != null ? `허리 ${wv.toFixed(1)} cm` : ""].filter(Boolean).map(s => " · " + s).join("")));
+      };
+      pair.replaceChildren(...(cur.a ? [fig(cur.a)] : []), ...(cur.b && cur.b !== cur.a ? [fig(cur.b)] : []));
+    };
+    draw();
+    panel.append(segBox, pick, pair, h("p", { class: "small muted" }, "같은 장소·조명·거리에서 찍은 사진끼리 비교해야 차이가 정확히 보여요."));
+  });
+}
+
 /* ---------- backup ---------- */
-const KINDS = ["meal", "weight", "gym", "run", "inbody"];
-const KIND_KO = { meal: "식사", weight: "체중", gym: "헬스", run: "러닝", inbody: "인바디" };
-const ID_RE = /^(settings|(weight|gym|run|inbody)_(\d{4}-\d{2}-\d{2})|meal_(\d{4}-\d{2}-\d{2})_\d{4}_[a-z0-9]{1,12})$/;
+const KINDS = ["meal", "weight", "gym", "run", "inbody", "body", "mealplan"];
+const KIND_KO = { meal: "식사", weight: "체중", gym: "헬스", run: "러닝", inbody: "인바디", body: "몸 변화", mealplan: "식단표" };
+const ID_RE = /^(settings|profile|(weight|gym|run|inbody|body|mealplan)_(\d{4}-\d{2}-\d{2})|meal_(\d{4}-\d{2}-\d{2})_\d{4}_[a-z0-9]{1,12})$/;
 function kindCounts(docs) {
-  const c = { meal: 0, weight: 0, gym: 0, run: 0, inbody: 0, settings: 0 };
+  const c = { meal: 0, weight: 0, gym: 0, run: 0, inbody: 0, body: 0, mealplan: 0, settings: 0, profile: 0 };
   for (const d of docs.values()) if (d && d.kind in c) c[d.kind]++;
   return c;
 }
@@ -1663,7 +2457,7 @@ function parseBackup(obj) {
   for (const [id, d] of Object.entries(obj.docs)) {
     const m = ID_RE.exec(id);
     const day = m && (m[3] || m[4]);
-    const kindOk = m && isPlainObj(d) && (id === "settings" ? d.kind === "settings" : id.startsWith(d.kind + "_"));
+    const kindOk = m && isPlainObj(d) && (id === "settings" || id === "profile" ? d.kind === id : id.startsWith(d.kind + "_"));
     if (kindOk && (!day || d.date === day)) docs.set(id, d); else skipped++;
   }
   return { docs, skipped };
@@ -1671,7 +2465,7 @@ function parseBackup(obj) {
 const readText = file => (file.text ? file.text() : new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => rej(r.error); r.readAsText(file); }));
 async function importBackup(file) {
   if (!canWrite()) return;
-  if (file.size > 60 * 1048576) { toast("파일이 너무 커요. 이 앱에서 내보낸 백업 파일인지 확인하세요."); return; }
+  if (file.size > 120 * 1048576) { toast("파일이 너무 커요. 이 앱에서 내보낸 백업 파일인지 확인하세요."); return; }
   let parsed = null;
   try { parsed = parseBackup(JSON.parse(await readText(file))); } catch (e) { parsed = null; }
   if (!parsed) { toast("백업 파일을 읽지 못했어요. 이 앱에서 내보낸 .json 파일인지 확인하세요."); return; }
@@ -1699,7 +2493,7 @@ async function importBackup(file) {
       }
     });
     panel.append(
-      h("p", null, countText(c) + (c.settings ? " · 목표 설정" : "")),
+      h("p", null, countText(c) + (c.settings ? " · 목표 설정" : "") + (c.profile ? " · 내 정보" : "")),
       h("p", { class: "small muted" }, (replaced ? `지금 있는 항목 중 ${replaced}개는 백업 내용으로 바뀌어요. ` : "") + "백업에 없는 지금 기록은 그대로 남아요."
         + (parsed.skipped ? ` 알아볼 수 없는 항목 ${parsed.skipped}개는 건너뛰어요.` : "")),
       h("div", { class: "row" }, go, cancel), msg);
@@ -1736,6 +2530,10 @@ function wire() {
   $("#addBtn").addEventListener("click", openManual);
   $("#ibPhotoBtn").addEventListener("click", openInbodyPhoto);
   $("#ibAddBtn").addEventListener("click", openInbodyManual);
+  $("#bodyAddBtn").addEventListener("click", () => openBodyEntry(isFuture(state.selected) ? state.today : state.selected));
+  $("#dtEdit").addEventListener("click", openProfile);
+  $("#mpGen").addEventListener("click", openPlanMaker);
+  $("#shopCopy").addEventListener("click", copyShopping);
   $("#sheet").addEventListener("click", e => { if (e.target === e.currentTarget) closeSheet(false); });
   document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#sheet").hidden) closeSheet(false); });
   /* tabs replace the history entry, so the back gesture leaves the app instead of stepping through tabs */
@@ -1767,16 +2565,19 @@ function wire() {
   $("#setForm").addEventListener("submit", e => {
     e.preventDefault();
     const kcal = inRange($("#sKcal").value, 800, 6000), prot = inRange($("#sProt").value, 20, 400);
+    const carb = inRange($("#sCarb").value, 20, 900), fat = inRange($("#sFat").value, 10, 300);
     const bodyUnit = okUnit($("#sBodyUnit").value), liftUnit = okUnit($("#sLiftUnit").value);
     const rminIn = inRange($("#sMin").value, 0, 5), rmaxIn = inRange($("#sMax").value, 0, 5), step = inRange($("#sStep").value, 25, 1000);
     if ($("#sKcal").value.trim() && kcal == null) { toast("칼로리는 800–6,000 사이로 입력하세요."); return; }
     if ($("#sProt").value.trim() && prot == null) { toast("단백질은 20–400 g 사이로 입력하세요."); return; }
+    if ($("#sCarb").value.trim() && carb == null) { toast("탄수화물은 20–900 g 사이로 입력하세요."); return; }
+    if ($("#sFat").value.trim() && fat == null) { toast("지방은 10–300 g 사이로 입력하세요."); return; }
     if (rminIn == null || rmaxIn == null || rminIn >= rmaxIn) { toast("주간 최소 감량이 최대 감량보다 작아야 해요."); return; }
     if (step == null) { toast("조정 폭은 25–1,000 kcal로 입력하세요."); return; }
     /* the band was typed in the unit shown next to it (the saved body unit) */
     const shown = bu();
     saveSettings({
-      kcalTarget: kcal, proteinTarget: prot, bodyUnit, liftUnit,
+      kcalTarget: kcal, proteinTarget: prot, carbTarget: carb == null ? null : Math.round(carb), fatTarget: fat == null ? null : Math.round(fat), bodyUnit, liftUnit,
       rateMin: round2(toKg(rminIn, shown)), rateMax: round2(toKg(rmaxIn, shown)), stepKcal: Math.round(step),
     }).then(() => toast("목표와 단위를 저장했어요.")).catch(() => {});
   });
