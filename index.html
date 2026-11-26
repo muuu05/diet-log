@@ -61,8 +61,20 @@
   </nav>
 
   <p class="status" id="status" role="status" hidden></p>
+  <section class="callout update" id="updateBar" hidden>
+    <p class="small"><b>새 버전이 준비됐어요.</b> 지금 바꾸거나, 다음에 앱을 열 때 바뀌어요. 기록은 그대로예요.</p>
+    <button class="btn primary small" id="updateBtn" type="button">지금 적용</button>
+  </section>
 
   <div class="view" id="view-today">
+    <section class="callout" id="checkin" aria-labelledby="checkinH" hidden>
+      <div class="callout-head">
+        <h2 id="checkinH">몸 변화 기록할 날이에요</h2>
+        <button class="xbtn" id="checkinClose" type="button" aria-label="오늘은 닫기">×</button>
+      </div>
+      <p class="small" id="checkinText"></p>
+      <button class="btn primary" id="checkinBtn" type="button">기록하기</button>
+    </section>
     <section class="callout" id="installHint" aria-labelledby="installH" hidden>
       <div class="callout-head">
         <h2 id="installH">홈 화면에 추가하세요</h2>
@@ -85,6 +97,7 @@
       </div>
       <p class="macro-sub" id="protSub">&nbsp;</p>
       <p class="macro-more" id="macroMore" hidden></p>
+      <button class="btn small now-btn" id="nowBtn" type="button" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 12h17M4.6 12a7.4 7.4 0 0 0 14.8 0M9.5 20.5h5"/></svg>지금 뭐 먹지?</button>
     </section>
 
     <div class="tiles">

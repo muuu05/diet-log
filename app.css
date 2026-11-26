@@ -529,6 +529,36 @@ button.mp-main { appearance: none; border: 0; background: none; padding: 0; colo
 .rc-steps li::before { content: counter(st); font: 700 16px/1.4 var(--font-num); color: var(--accent); }
 .check { display: flex; align-items: center; gap: 10px; font: 500 15px/1.35 var(--font-sys); color: var(--ink); cursor: pointer; min-height: 40px; }
 
+/* ---------- goal, shape and "what now" ---------- */
+.dt-goal { margin-top: 14px; padding: 12px 13px; border-radius: 14px; background: var(--accent-soft); display: grid; gap: 7px; font-size: 14px; }
+.bar.goal { background: var(--surface); box-shadow: none; }
+.bar.goal > i { background: var(--accent); }
+.dt-shape { margin-top: 12px; font-size: 13px; line-height: 1.55; color: var(--muted); }
+.dt-shape b { color: var(--ink); font-weight: 700; margin-right: 2px; }
+.now-btn { justify-self: start; margin-top: 2px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.now-goal { font: 600 15px/1.4 var(--font-sys); }
+.now-list, .now-ai { display: grid; gap: 8px; }
+.now-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 11px 12px; border-radius: 14px; background: var(--surface-2); }
+.now-ai:empty { display: none; }
+.callout.update { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: var(--blue-soft); }
+.callout.update .btn { margin-top: 0; }
+
+/* ---------- photo line-up and the before/after slider ---------- */
+.al { display: grid; gap: 10px; padding: 12px; border-radius: 16px; background: var(--surface-2); }
+.al-title { font: 700 14px/1.3 var(--font-sys); }
+.al-stage, .sl-stage { position: relative; aspect-ratio: 3 / 4; overflow: hidden; border-radius: 14px; background: #000; touch-action: pan-y; }
+.al-stage img, .sl-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform-origin: 50% 50%; }
+.al-ref { pointer-events: none; }
+.al-row { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 10px; align-items: center; }
+.al input[type="range"], .cmp-view input[type="range"] {
+  appearance: auto; -webkit-appearance: auto; width: 100%; min-height: 32px; padding: 0; margin: 0; border: 0; background: none; accent-color: var(--accent);
+}
+.cmp-view { display: grid; gap: 10px; }
+.sl-line { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .35); pointer-events: none; }
+.sl-tag { position: absolute; top: 8px; padding: 3px 8px; border-radius: 8px; background: rgba(0, 0, 0, .55); color: #fff; font: 600 12px/1.3 var(--font-sys); }
+.sl-tag.l { left: 8px; }
+.sl-tag.r { right: 8px; }
+
 /* ---------- plan ---------- */
 .plan-body { display: grid; gap: 26px; }
 .plan-body .box h3 { font: 700 15px/1.3 var(--font-sys); margin-bottom: 6px; }
@@ -585,7 +615,7 @@ footer { font-size: 12.5px; color: var(--muted); padding: 0 4px; line-height: 1.
 
 /* touch screens: thumb-sized targets */
 @media (pointer: coarse) {
-  .btn, input, select { min-height: 46px; }
+  .btn, input:not([type="range"]):not([type="checkbox"]), select { min-height: 46px; }
   .btn.small { min-height: 40px; }
   .iconbtn { width: 44px; height: 44px; }
   .seg-btn { min-height: 34px; padding: 0 12px; }
