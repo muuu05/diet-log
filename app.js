@@ -91,7 +91,10 @@ function unitToggle(current, onPick, disabled, label) {
 }
 
 /* ---------- small device settings (not records): API key, model, last backup ---------- */
-const LS = { key: "dietlog.apiKey", model: "dietlog.model", backup: "dietlog.lastBackup", hint: "dietlog.hideInstallHint", usage: "dietlog.usage", checkin: "dietlog.checkinHidden" };
+const LS = {
+  key: "dietlog.apiKey", model: "dietlog.model", backup: "dietlog.lastBackup", hint: "dietlog.hideInstallHint", usage: "dietlog.usage", checkin: "dietlog.checkinHidden",
+  modelPhoto: "dietlog.model.photo", modelPlan: "dietlog.model.plan", modelNow: "dietlog.model.now",
+};
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); return true; } catch (e) { return false; } };
 
@@ -1516,7 +1519,35 @@ function usageText() {
 const AI_SYSTEM = "You read photos for a personal diet and training log used in South Korea. Follow the instructions exactly. Reply with one JSON object only: no prose before or after it, no markdown code fences.";
 const aiKey = () => (lsGet(LS.key) || "").trim();
 const aiModel = () => (lsGet(LS.model) || "").trim() || MODEL_IDS[0];
-const aiErr = (code, extra) => Object.assign(new Error(code), { code }, extra || {});
+/* each AI feature can use its own model; nothing stored means "follow the main model" */
+const MODEL_NAMES = { "claude-sonnet-5-5": "Sonnet 5.5", "claude-opus-5-5": "Opus 5.5", "claude-haiku-5-5": "Haiku 5.5" };
+const modelName = id => MODEL_NAMES[id] || id;
+const FEATURES = [
+  { id: "photo", ls: LS.modelPhoto, short: "사진" },
+  { id: "plan", ls: LS.modelPlan, short: "식단" },
+  { id: "now", ls: LS.modelNow, short: "새 레시피" },
+];
+const featModel = f => { const v = (lsGet(FEATURES.find(x => x.id === f).ls) || "").trim(); return MODEL_IDS.includes(v) ? v : ""; };
+const aiModelFor = f => featModel(f) || aiModel();
+/* A typical month here: 3 meal photos a day, runs 3 times a week and one InBody sheet (about 104 photo reads),
+   5 weekly plans and one new recipe a day. Tokens per use (input, output incl. thinking) are estimates from this
+   app's own prompts. Only used to show what a mix of models would cost. */
+const MONTH_USE = { photo: [104, 2700, 400], plan: [5, 3000, 7500], now: [30, 500, 850] };
+const fmtUsd = v => `$${v < 0.1 ? v.toFixed(3) : v.toFixed(2)}`;
+function estimateText(pick) {
+  let usd = 0, unpriced = false;
+  const parts = [];
+  for (const f of FEATURES) {
+    const [n, i, o] = MONTH_USE[f.id], p = PRICE[pick[f.id]];
+    if (!p) { unpriced = true; continue; }
+    const v = (n * (i * p[0] + o * p[1])) / 1e6;
+    usd += v;
+    parts.push(`${f.short} ${fmtUsd(v)}`);
+  }
+  if (!parts.length) return "직접 입력한 모델은 요금을 몰라서 한 달 예상을 계산하지 않아요.";
+  return `이 설정이면 한 달 약 ${fmtUsd(usd)} (${parts.join(" · ")})${unpriced ? ", 직접 입력한 모델은 빠졌어요" : ""}. 하루 사진 3장, 러닝 주 3번, 인바디 월 1번, 식단 월 5번, 새 레시피 하루 1번으로 잡은 추정치예요.`;
+}
+const aiErr =(code, extra) => Object.assign(new Error(code), { code }, extra || {});
 function blobToBase64(blob) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -1634,7 +1665,7 @@ async function aiJson(prompt, opts = {}) {
   const content = [];
   for (const b of opts.images || []) content.push({ type: "image", source: { type: "base64", media_type: b.type || "image/jpeg", data: await blobToBase64(b) } });
   content.push({ type: "text", text: prompt });
-  const body = await callClaude({ content, maxTokens: opts.maxTokens || 4000, signal: opts.signal, model: aiModel(), key, effort: "low" });
+  const body = await callClaude({ content, maxTokens: opts.maxTokens || 4000, signal: opts.signal, model: aiModelFor("photo"), key, effort: "low" });
   if (body.stop_reason === "refusal") throw aiErr("refused");
   const text = Array.isArray(body.content) ? body.content.filter(c => c && c.type === "text").map(c => c.text).join("") : "";
   if (!text.trim()) throw aiErr("empty_completion");
@@ -1669,26 +1700,50 @@ function wireAi() {
   sel.value = known ? cur : "custom";
   custom.value = known ? "" : cur;
   wrap.hidden = sel.value !== "custom";
-  sel.addEventListener("change", () => { wrap.hidden = sel.value !== "custom"; if (!wrap.hidden) custom.focus(); });
+  const mainChoice = () => (sel.value === "custom" ? custom.value.trim() : sel.value);
+  const feats = FEATURES.map(f => {
+    const s = $(`#aiModel_${f.id}`);
+    s.replaceChildren(h("option", { value: "" }, "기본 모델 따르기"), ...MODEL_IDS.map(id => h("option", { value: id }, modelName(id))));
+    s.value = featModel(f.id);
+    return [f, s];
+  });
+  const showEstimate = () => {
+    const main = mainChoice();
+    $("#aiEstimate").textContent = estimateText(Object.fromEntries(feats.map(([f, s]) => [f.id, s.value || main])));
+  };
+  if (feats.some(([, s]) => s.value)) $("#aiFeat").open = true;
+  sel.addEventListener("change", () => { wrap.hidden = sel.value !== "custom"; if (!wrap.hidden) custom.focus(); showEstimate(); });
+  custom.addEventListener("input", showEstimate);
+  for (const [, s] of feats) s.addEventListener("change", showEstimate);
+  showEstimate();
   $("#aiForm").addEventListener("submit", e => {
     e.preventDefault();
     const k = keyIn.value.trim();
-    const model = sel.value === "custom" ? custom.value.trim() : sel.value;
+    const model = mainChoice();
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$/.test(model)) { msg.textContent = "모델 ID를 확인하세요. 예: claude-sonnet-5-5"; return; }
     if (k && (/\s/.test(k) || k.length < 20)) { msg.textContent = "키를 다시 확인하세요. 공백 없이 전체를 붙여 넣어야 해요."; return; }
-    if ((k && !lsSet(LS.key, k)) || !lsSet(LS.model, model)) { msg.textContent = "이 브라우저에 저장하지 못했어요."; return; }
+    const saved = (!k || lsSet(LS.key, k)) && lsSet(LS.model, model) && feats.every(([f, s]) => lsSet(f.ls, s.value || null));
+    if (!saved) { msg.textContent = "이 브라우저에 저장하지 못했어요."; return; }
     keyIn.value = "";
     state.photo.ok = !!aiKey();
     msg.textContent = k ? (k.startsWith("sk-ant-") ? "키를 저장했어요. ‘연결 확인’으로 한 번 시험해 보세요." : "저장했어요. 다만 Anthropic 키는 보통 sk-ant- 로 시작해요.") : "모델을 저장했어요.";
     renderAll();
   });
+  /* one tiny request per model in use, so a model this key can't reach shows up here instead of in the middle of a task */
   $("#aiTest").addEventListener("click", async () => {
     const key = aiKey(), btn = $("#aiTest");
     if (!key) return;
     btn.disabled = true; msg.textContent = "확인하는 중…";
+    const models = [...new Set(FEATURES.map(f => aiModelFor(f.id)))], missing = [];
     try {
-      await callClaude({ content: [{ type: "text", text: "Reply with the word OK." }], maxTokens: 64, model: aiModel(), key, effort: "low" });
-      msg.textContent = `연결됐어요. ${aiModel()} 모델로 사진 읽기와 식단 만들기를 쓸 수 있어요.`;
+      for (const m of models) {
+        try { await callClaude({ content: [{ type: "text", text: "Reply with the word OK." }], maxTokens: 64, model: m, key, effort: "low" }); }
+        catch (e) { if (!e || e.code !== "no_model") throw e; missing.push(m); }
+      }
+      const ok = models.filter(m => !missing.includes(m)).map(modelName);
+      msg.textContent = missing.length
+        ? `${missing.map(modelName).join(", ")} 모델은 찾을 수 없어요. 다른 모델을 고르세요.${ok.length ? ` ${ok.join(", ")}는 연결됐어요.` : ""}`
+        : models.length === 1 ? `연결됐어요. ${ok[0]} 모델로 AI 기능을 쓸 수 있어요.` : `연결됐어요. ${ok.join(", ")} 모두 쓸 수 있어요.`;
     } catch (e) { msg.textContent = sampleCopy(e && e.code, e && e.detail); }
     finally { btn.disabled = !aiKey(); }
   });
@@ -2292,7 +2347,7 @@ function openPlanMaker() {
         saveProfile({ prefs }).catch(() => {});
         const res = await callClaudeStream({
           content: [{ type: "text", text: planPrompt(t, prefs, mon, profile().shape) }], maxTokens: 16000, effort: "medium",
-          signal: ctl.signal, model: aiModel(), key: aiKey(), system: PLAN_SYSTEM,
+          signal: ctl.signal, model: aiModelFor("plan"), key: aiKey(), system: PLAN_SYSTEM,
           onThink: () => { progress = "식단을 구상하는 중…"; },
           onText: txt => {
             const nr = (txt.match(/"steps"\s*:/g) || []).length, nd = (txt.match(/"meals"\s*:/g) || []).length;
@@ -2306,7 +2361,7 @@ function openPlanMaker() {
         if (plan.recipes.length < 2 || plan.days.some(d => !d.meals.length)) throw aiErr(res.stop === "max_tokens" ? "truncated" : "invalid_plan");
         await save(id, Object.assign({
           kind: "mealplan", date: mon, pid: Math.random().toString(36).slice(2, 8), createdAt: new Date().toISOString(),
-          model: aiModel(), targets: t, prefs, usage: res.usage, checked: {},
+          model: aiModelFor("plan"), targets: t, prefs, usage: res.usage, checked: {},
         }, plan));
         clearInterval(tick);
         sheetBusy = false;
@@ -2428,7 +2483,7 @@ function openNow() {
       try {
         const body = await callClaude({
           content: [{ type: "text", text: nowPrompt(target, little ? "간식" : slot, profile().prefs, profile().shape, seen) }],
-          maxTokens: 4000, signal: ctl.signal, model: aiModel(), key: aiKey(), effort: "low", system: PLAN_SYSTEM,
+          maxTokens: 4000, signal: ctl.signal, model: aiModelFor("now"), key: aiKey(), effort: "low", system: PLAN_SYSTEM,
         });
         if (body.stop_reason === "refusal") throw aiErr("refused");
         const text = Array.isArray(body.content) ? body.content.filter(c => c && c.type === "text").map(c => c.text).join("") : "";
@@ -2775,7 +2830,8 @@ function renderData() {
   $("#importFile").disabled = !canWrite();
   $("#importLabel").classList.toggle("is-disabled", !canWrite());
   const key = aiKey();
-  $("#aiKeyState").textContent = key ? `저장된 키: ${maskKey(key)} · 모델 ${aiModel()}` : "저장된 키가 없어요. AI 기능은 꺼져 있어요.";
+  const over = FEATURES.filter(f => featModel(f.id) && featModel(f.id) !== aiModel()).map(f => `${f.short} ${modelName(featModel(f.id))}`);
+  $("#aiKeyState").textContent = key ? `저장된 키: ${maskKey(key)} · 모델 ${modelName(aiModel())}${over.length ? ` (${over.join(", ")})` : ""}` : "저장된 키가 없어요. AI 기능은 꺼져 있어요.";
   $("#aiUsage").textContent = usageText();
   $("#aiTest").disabled = !key;
   $("#aiClear").hidden = !key;
@@ -2790,20 +2846,123 @@ async function renderStorageInfo() {
   } catch (e) { /* not supported here */ }
   $("#storageNote").textContent = parts.join(" · ");
 }
-function exportBackup() {
+function backupJson() {
   const docs = {};
   for (const [id, d] of state.docs) docs[id] = d;
-  const json = JSON.stringify({ app: "diet-log", version: 1, exportedAt: new Date().toISOString(), docs });
-  const name = `diet-log-backup-${state.today}.json`;
-  const file = new File([json], name, { type: "application/json" });
-  const done = () => { lsSet(LS.backup, new Date().toISOString()); renderAll(); toast("백업 파일을 만들었어요. 파일 앱이나 클라우드에 보관하세요."); };
+  return JSON.stringify({ app: "diet-log", version: 1, exportedAt: new Date().toISOString(), docs });
+}
+/* phones only open the share sheet straight from a tap, so this always runs inside a click handler */
+function deliverBackup(file, note) {
+  const done = () => { lsSet(LS.backup, new Date().toISOString()); renderAll(); toast(note); };
   let shareable = false;
   try { shareable = !!(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) { shareable = false; }
   if (shareable) {
-    navigator.share({ files: [file], title: name }).then(done).catch(err => { if (!err || err.name !== "AbortError") download(file, name, done); });
+    navigator.share({ files: [file], title: file.name }).then(done).catch(err => { if (!err || err.name !== "AbortError") download(file, file.name, done); });
     return;
   }
-  download(file, name, done);
+  download(file, file.name, done);
+}
+
+/* ---------- password-locked backups ----------
+   PBKDF2-HMAC-SHA256 with 600,000 rounds (OWASP's current recommendation) turns the password into an AES-256-GCM key.
+   The JSON is gzipped first when the browser can. The file stays .json so it shares and imports like a plain backup,
+   but only the salt, IV and settings are readable. The password is never stored: forget it and the file can't be opened. */
+const LOCK_ITER = 600000;
+const canZip = typeof CompressionStream === "function" && typeof DecompressionStream === "function";
+const pipeBytes = (bytes, t) => new Response(new Blob([bytes]).stream().pipeThrough(t)).arrayBuffer().then(b => new Uint8Array(b));
+const bytesToB64 = bytes => blobToBase64(new Blob([bytes]));
+function b64ToBytes(s) {
+  if (typeof s !== "string" || s.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) throw aiErr("bad_file");
+  if (typeof Uint8Array.fromBase64 === "function") return Uint8Array.fromBase64(s);
+  const out = new Uint8Array((s.length / 4) * 3 - (s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0));
+  let o = 0;
+  for (let i = 0; i < s.length; i += 1 << 20) {   /* 1 MiB of base64 at a time keeps memory flat */
+    const bin = atob(s.slice(i, i + (1 << 20)));
+    for (let j = 0; j < bin.length; j++) out[o++] = bin.charCodeAt(j);
+  }
+  return out;
+}
+async function passKey(password, salt, iter) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password.normalize("NFKC")), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt, iterations: iter }, base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function lockedBackupFile(password) {
+  let bytes = new TextEncoder().encode(backupJson()), zip = null;
+  if (canZip) { bytes = await pipeBytes(bytes, new CompressionStream("gzip")); zip = "gzip"; }
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await passKey(password, salt, LOCK_ITER), bytes);
+  const head = JSON.stringify({ app: "diet-log", version: 1,
+    locked: { v: 1, kdf: "PBKDF2-SHA256", iter: LOCK_ITER, salt: await bytesToB64(salt), cipher: "AES-256-GCM", iv: await bytesToB64(iv), zip } });
+  /* the big base64 field goes in as its own part instead of being stringified once more */
+  return new File([head.slice(0, -1), ',"data":"', await bytesToB64(ct), '"}'], `diet-log-backup-${state.today}-locked.json`, { type: "application/json" });
+}
+function readLocked(obj) {
+  const L = obj.locked;
+  const ok = isPlainObj(L) && L.v === 1 && L.kdf === "PBKDF2-SHA256" && L.cipher === "AES-256-GCM"
+    && Number.isInteger(L.iter) && L.iter >= 1000 && L.iter <= 5000000 && (L.zip == null || L.zip === "gzip");
+  if (!ok) throw aiErr("bad_file");
+  if (L.zip && !canZip) throw aiErr("no_zip");
+  const lk = { iter: L.iter, zip: L.zip, salt: b64ToBytes(L.salt), iv: b64ToBytes(L.iv), data: b64ToBytes(obj.data) };
+  if (lk.salt.length < 8 || lk.iv.length !== 12 || lk.data.length < 17) throw aiErr("bad_file");
+  return lk;
+}
+async function unlockBackup(lk, password) {
+  let bytes;
+  try { bytes = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: lk.iv }, await passKey(password, lk.salt, lk.iter), lk.data)); }
+  catch (e) { throw aiErr("wrong_password"); }   /* GCM can't tell a wrong password from a changed file */
+  if (lk.zip) bytes = await pipeBytes(bytes, new DecompressionStream("gzip"));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+function openExportSheet() {
+  if (!state.docs.size) return;
+  openSheet("백업 내보내기", panel => {
+    const lock = h("input", { type: "checkbox", id: "bkLock", checked: true });
+    const pwIn = id => h("input", { id, type: "password", autocomplete: "new-password", autocapitalize: "off", autocorrect: "off", spellcheck: "false" });
+    const pw = pwIn("bkPw"), pw2 = pwIn("bkPw2");
+    const make = h("button", { class: "btn primary", type: "submit", id: "bkMake" }, "잠가서 만들기");
+    const msg = h("p", { class: "small muted wide", "aria-live": "polite" });
+    const hasPhotos = [...state.docs.keys()].some(id => id.startsWith("body_"));
+    const pwParts = [field("bkPw", "비밀번호 (8자 이상)", pw), field("bkPw2", "비밀번호 한 번 더", pw2),
+      h("p", { class: "small muted wide" }, "비밀번호는 어디에도 저장하지 않아요. 잊으면 이 백업은 누구도 열 수 없어요. ‘월수금은 한강을 달린다’처럼 문장으로 정하면 기억하기 쉽고 안전해요.")];
+    const form = h("form", { class: "est-grid" },
+      h("p", { class: "small wide" }, `들어가는 기록: ${countText(kindCounts(state.docs))}` + (hasPhotos ? ". 몸 변화 사진도 들어가요." : "")),
+      h("label", { class: "check wide" }, lock, "비밀번호로 잠그기 (추천)"),
+      ...pwParts, h("div", { class: "wide row" }, make), msg);
+    lock.addEventListener("change", () => {
+      for (const el of pwParts) el.hidden = !lock.checked;
+      make.textContent = lock.checked ? "잠가서 만들기" : "잠그지 않고 만들기";
+      msg.textContent = "";
+    });
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      if (!lock.checked) {
+        closeSheet(true);
+        deliverBackup(new File([backupJson()], `diet-log-backup-${state.today}.json`, { type: "application/json" }), "백업 파일을 만들었어요. 파일 앱이나 클라우드에 보관하세요.");
+        return;
+      }
+      if ([...pw.value].length < 8) { msg.textContent = "비밀번호를 8자 이상으로 정하세요."; pw.focus(); return; }
+      if (pw.value !== pw2.value) { msg.textContent = "두 비밀번호가 달라요. 다시 확인하세요."; pw2.focus(); return; }
+      sheetBusy = true; make.disabled = true; lock.disabled = true; msg.textContent = "잠그는 중… 몇 초 걸려요.";
+      try {
+        const file = await lockedBackupFile(pw.value);
+        pw.value = ""; pw2.value = "";
+        sheetBusy = false;
+        /* encrypting takes a moment, and the share sheet needs a fresh tap, so saving is a second step */
+        const save = h("button", { class: "btn primary", type: "button", id: "bkSave" }, "파일 저장하기");
+        save.addEventListener("click", () => { closeSheet(true); deliverBackup(file, "잠근 백업 파일을 만들었어요. 비밀번호는 따로 기억해 두세요."); });
+        $("#sheetTitle").textContent = "잠근 백업이 준비됐어요";
+        panel.replaceChildren(panel.firstElementChild,
+          h("p", null, `${file.name} · ${fmtBytes(file.size)}`),
+          h("p", { class: "small muted" }, "‘파일 저장하기’를 누르고 파일 앱이나 클라우드에 보관하세요. 가져올 때 이 비밀번호를 물어봐요."),
+          h("div", { class: "row" }, save));
+        save.focus();
+      } catch (err) {
+        sheetBusy = false; make.disabled = false; lock.disabled = false;
+        msg.textContent = "잠그지 못했어요. 다시 시도하세요.";
+      }
+    });
+    panel.append(form);
+  });
 }
 function download(blob, name, done) {
   const url = URL.createObjectURL(blob);
@@ -2829,15 +2988,51 @@ function parseBackup(obj) {
 const readText = file => (file.text ? file.text() : new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => rej(r.error); r.readAsText(file); }));
 async function importBackup(file) {
   if (!canWrite()) return;
-  if (file.size > 120 * 1048576) { toast("파일이 너무 커요. 이 앱에서 내보낸 백업 파일인지 확인하세요."); return; }
-  let parsed = null;
-  try { parsed = parseBackup(JSON.parse(await readText(file))); } catch (e) { parsed = null; }
+  if (file.size > 160 * 1048576) { toast("파일이 너무 커요. 이 앱에서 내보낸 백업 파일인지 확인하세요."); return; }
+  let obj = null;
+  try { obj = JSON.parse(await readText(file)); } catch (e) { obj = null; }
+  if (isPlainObj(obj) && obj.app === "diet-log" && obj.locked !== undefined) { openUnlockSheet(obj); return; }
+  const parsed = obj ? parseBackup(obj) : null;
   if (!parsed) { toast("백업 파일을 읽지 못했어요. 이 앱에서 내보낸 .json 파일인지 확인하세요."); return; }
-  if (!parsed.docs.size) { toast("이 파일에는 가져올 기록이 없어요."); return; }
+  confirmImport(parsed);
+}
+function openUnlockSheet(obj) {
+  let lk;
+  try { lk = readLocked(obj); }
+  catch (e) { toast(e && e.code === "no_zip" ? "이 브라우저에서는 이 백업을 열 수 없어요. 최신 Safari나 Chrome에서 여세요." : "잠긴 백업 파일을 읽지 못했어요. 파일이 손상됐을 수 있어요."); return; }
+  openSheet("잠긴 백업 열기", panel => {
+    const pw = h("input", { id: "ubPw", type: "password", autocomplete: "current-password", autocapitalize: "off", autocorrect: "off", spellcheck: "false" });
+    const go = h("button", { class: "btn primary", type: "submit", id: "ubGo" }, "열기");
+    const msg = h("p", { class: "small muted wide", "aria-live": "polite" });
+    const form = h("form", { class: "est-grid" },
+      h("p", { class: "small muted wide" }, "비밀번호로 잠근 백업이에요. 내보낼 때 정한 비밀번호를 넣으세요."),
+      field("ubPw", "비밀번호", pw, "wide"), h("div", { class: "wide row" }, go), msg);
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      if (!pw.value) { msg.textContent = "비밀번호를 넣으세요."; pw.focus(); return; }
+      sheetBusy = true; go.disabled = true; msg.textContent = "여는 중…";
+      try {
+        const parsed = parseBackup(await unlockBackup(lk, pw.value));
+        if (!parsed) throw aiErr("bad_file");
+        pw.value = "";
+        sheetBusy = false;
+        confirmImport(parsed, panel);
+      } catch (err) {
+        sheetBusy = false; go.disabled = false;
+        msg.textContent = err && err.code === "wrong_password" ? "비밀번호가 맞지 않거나 파일이 손상됐어요. 다시 넣어 보세요." : "이 백업을 열지 못했어요. 파일이 손상됐을 수 있어요.";
+        pw.select();
+      }
+    });
+    panel.append(form);
+  });
+}
+/* shows what a backup holds and imports it on a tap; after unlocking it reuses the sheet that's already open */
+function confirmImport(parsed, open) {
+  if (!parsed.docs.size) { if (open) closeSheet(true); toast("이 파일에는 가져올 기록이 없어요."); return; }
   const c = kindCounts(parsed.docs);
   let replaced = 0;
   for (const id of parsed.docs.keys()) if (state.docs.has(id)) replaced++;
-  openSheet("백업을 가져올까요?", panel => {
+  const fill = panel => {
     const msg = h("p", { class: "small muted", "aria-live": "polite" });
     const go = h("button", { class: "btn primary", type: "button" }, "가져오기");
     const cancel = h("button", { class: "btn", type: "button", onclick: () => closeSheet(true) }, "취소");
@@ -2861,7 +3056,12 @@ async function importBackup(file) {
       h("p", { class: "small muted" }, (replaced ? `지금 있는 항목 중 ${replaced}개는 백업 내용으로 바뀌어요. ` : "") + "백업에 없는 지금 기록은 그대로 남아요."
         + (parsed.skipped ? ` 알아볼 수 없는 항목 ${parsed.skipped}개는 건너뛰어요.` : "")),
       h("div", { class: "row" }, go, cancel), msg);
-  });
+  };
+  if (!open) { openSheet("백업을 가져올까요?", fill); return; }
+  $("#sheetTitle").textContent = "백업을 가져올까요?";
+  open.replaceChildren(open.firstElementChild);
+  fill(open);
+  open.querySelector(".btn.primary").focus();
 }
 
 /* ---------- install hint ---------- */
@@ -2952,7 +3152,7 @@ function wire() {
       rateMin: round2(toKg(rminIn, shown)), rateMax: round2(toKg(rmaxIn, shown)), stepKcal: Math.round(step),
     }).then(() => toast("목표와 단위를 저장했어요.")).catch(() => {});
   });
-  $("#exportBtn").addEventListener("click", exportBackup);
+  $("#exportBtn").addEventListener("click", openExportSheet);
   $("#importFile").addEventListener("change", e => {
     const f = e.target.files && e.target.files[0];
     e.target.value = "";
